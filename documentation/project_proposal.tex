@@ -1,0 +1,466 @@
+\documentclass[aspectratio=169]{beamer}
+
+% ---------- Core packages ----------
+\usetheme[numbering=fraction,progressbar=foot]{metropolis}
+\metroset{sectionpage=none, subsectionpage=none}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,graphicx,microtype}
+\usepackage[numbers,sort&compress]{natbib}
+\bibliographystyle{abbrvnat}
+\usepackage{xurl}    % better URL line breaks
+\urlstyle{same}
+\usepackage{hyperref}
+
+% Compact bibliography + single "References" header
+\renewcommand{\bibsection}{}          % suppress natbib's internal title
+\setlength{\bibsep}{1pt plus 0.3ex}   % tighter spacing
+\setbeamertemplate{bibliography item}[text]
+\makeatletter
+\def\AtBeginBibliography{\footnotesize}
+\makeatother
+
+% ---------- JHU color palette ----------
+\definecolor{JHUblue}{RGB}{0,45,114}       % Hopkins Blue
+\definecolor{JHUlightblue}{RGB}{0,100,210} % Spirit Blue
+\definecolor{JHUgray}{RGB}{100,100,100}
+
+% Apply to Metropolis elements
+\setbeamercolor{palette primary}{bg=JHUblue, fg=white}
+\setbeamercolor{palette secondary}{bg=JHUlightblue, fg=white}
+\setbeamercolor{palette tertiary}{bg=JHUblue, fg=white}
+\setbeamercolor{frametitle}{fg=white,bg=JHUblue}
+\setbeamercolor{title separator}{fg=JHUlightblue}
+\setbeamercolor{progress bar}{fg=JHUblue,bg=gray!20}
+\setbeamercolor{structure}{fg=JHUblue}     % bullets, item titles
+\setbeamercolor{alerted text}{fg=JHUlightblue}
+\setbeamercolor{section title}{fg=white,bg=JHUblue}
+\setbeamercolor{title separator}{fg=JHUlightblue}
+
+% Optional: slightly bolder titles
+\setbeamerfont{title}{series=\bfseries,size=\Large}
+\setbeamerfont{frametitle}{series=\bfseries,size=\large}
+
+% Link colors (URLs / cites)
+\hypersetup{
+  colorlinks=true,
+  linkcolor=JHUblue,
+  urlcolor=JHUlightblue,
+  citecolor=JHUlightblue
+}
+
+% Title info
+\title{Reinforcement Learning for Dynamic Cryptocurrency Portfolio Management}
+\subtitle{An Empirical Deep Reinforcement Learning Framework for Weekly, Cost-Aware Crypto Allocation}
+\author{Jose Márquez Jaramillo, Taylor Hawks}
+\institute{Johns Hopkins University}
+\date{\today}
+
+\begin{document}
+% ---------- Section navigation (mini outline) ----------
+%\AtBeginSection[]
+%{
+%  \begin{frame}{Outline}
+%    \tableofcontents[currentsection]
+%  \end{frame}
+%}
+
+
+% ---------- Title Page (excluded from count) ----------
+{
+\setcounter{framenumber}{0}
+\begin{frame}[plain]
+  \titlepage
+\end{frame}
+}
+
+% =========================
+% Section 1: Motivation + Problem
+% =========================
+\section{Motivation and Problem}
+
+%=========================
+% Slide 1: Motivation and Research Goals
+%=========================
+\begin{frame}{Motivation and Research Goals}
+\small
+\begin{itemize}\setlength{\itemsep}{3pt}
+  \item \textbf{Cryptocurrency markets} are highly volatile and exhibit strong regime shifts, making static allocation rules (e.g., equal or market-cap weights) often sub-optimal.
+  \item \textbf{Reinforcement Learning (RL)} provides a natural framework for \emph{adaptive portfolio rebalancing} by treating allocation as a sequential decision problem under uncertainty.
+  \item Traditional optimization methods (mean–variance, risk parity) assume stationarity and ignore transaction costs; RL can model \emph{dynamic, cost-aware} adjustments.
+\end{itemize}
+
+\vspace{0.4em}
+\textbf{Research Goal:}
+{\footnotesize
+\begin{itemize}\setlength{\itemsep}{2pt}
+  \item Develop and compare \textbf{deep RL agents} (LinUCB, DQN, A2C, REINFORCE+Baseline) for \textbf{long-only, weekly-rebalanced crypto portfolios}.
+  \item Evaluate performance across three dimensions: \textbf{profitability, risk, and trading efficiency}.
+\end{itemize}
+}
+
+\vspace{0.3em}
+\footnotesize Key references: \citep{jiang2017cryptocurrency,jiang2017framework,cui2023cvar}.
+\end{frame}
+
+
+%=========================
+% Slide 2: Problem Statement and Contributions (Two-Column Layout)
+%=========================
+\begin{frame}{Problem Statement and Contributions}
+\small
+
+\begin{columns}[T,totalwidth=\textwidth]
+  % ----- Left Column: Problem Statement -----
+  \begin{column}{0.52\textwidth}
+    \textbf{Problem Statement}
+    \begin{itemize}\setlength{\itemsep}{3pt}
+      \item Learn a \textbf{policy} $\pi_\theta(s_t)$ that outputs portfolio weights $w_t$ maximizing long-run, risk-adjusted growth under realistic transaction costs.
+      \item The environment provides daily market observations; the agent rebalances \textbf{weekly (every 7 days)} with proportional trading fees.
+    \end{itemize}
+
+    \textbf{Objective}
+    {\footnotesize
+    \begin{align*}
+    &\pi^\star = \arg\max_\pi \mathbb{E}_\pi\!\left[\sum_{t=1}^T r_t \right],\\
+    &r_t = \log(w_{t-1}^\top y_t) - c\|w_t - w_{t-1}\|_1.
+    \end{align*}
+    }
+  \end{column}
+
+  % ----- Right Column: Contributions -----
+  \begin{column}{0.48\textwidth}
+    \textbf{Main Contributions}
+    \begin{itemize}\setlength{\itemsep}{3pt}
+      \item A \textbf{cost- and risk-aware RL framework} for long-only cryptocurrency portfolio management using realistic Binance fees.
+      \item A unified environment for \textbf{LinUCB, DQN, A2C, REINFORCE+Baseline} with shared state, action, and reward design.
+      \item Comprehensive evaluation of RL agents and classical baselines (Equal-Weight, Market-Cap, Mean–Variance) across \textbf{profitability, risk, and efficiency}.
+    \end{itemize}
+
+    \vspace{0.3em}
+    \footnotesize References: \citep{jiang2017framework,betancourt2021dynamic,cui2023cvar}.
+  \end{column}
+\end{columns}
+
+\end{frame}
+
+
+
+% =========================
+% Section 2: Formulation
+% =========================
+\section{Formulation}
+
+%=========================
+% Slide 3: Formulation – Portfolio Management as an MDP
+%=========================
+\begin{frame}{Formulation: Portfolio Management as an MDP}
+\small
+
+\begin{columns}[T,totalwidth=\textwidth]
+  % ----- Left column: Math definition -----
+  \begin{column}{0.55\textwidth}
+    \textbf{Formal Definition}
+    {\footnotesize
+    \[
+      \mathcal{M} = \langle \mathcal{S}, \mathcal{A}, P, R, \gamma \rangle, \quad
+      \pi^\star = \arg\max_\pi 
+      \mathbb{E}_\pi \!\left[\sum_{t=1}^{T} r_t \right].
+    \]
+    }
+    \begin{itemize}\setlength{\itemsep}{2pt}
+      \item \textbf{State} $\mathcal{S}$: market and portfolio context $(X_{t-L+1:t}, w_{t-1}, m_t)$.
+      \item \textbf{Action} $\mathcal{A}$: portfolio weights $w_t$ on the simplex ($w_{t,i} \ge 0$, $\sum_i w_{t,i}=1$).
+      \item \textbf{Transition} $P$: exogenous market evolution; portfolio memory carried forward.
+      \item \textbf{Reward} $R$: net log-return minus trading costs.
+      \item \textbf{Discount} $\gamma = 1$: long-term wealth-growth objective.
+    \end{itemize}
+  \end{column}
+
+  % ----- Right column: Interpretation -----
+  \begin{column}{0.4\textwidth}
+    \textbf{Interpretation}
+    \begin{itemize}\setlength{\itemsep}{2pt}
+      \item The RL agent observes daily features and prior weights, then rebalances \textbf{weekly}.
+      \item Market prices drive transitions; the policy controls allocations only.
+      \item The reward integrates both \textbf{return} and \textbf{cost sensitivity}.
+      \item The optimal policy $\pi^\star$ maximizes expected cumulative wealth.
+    \end{itemize}
+    \footnotesize Based on frameworks by \citep{jiang2017framework,jiang2017cryptocurrency,cui2023cvar}.
+  \end{column}
+\end{columns}
+
+\end{frame}
+
+
+% =========================
+% Section 3: Design
+% =========================
+\section{Design}
+
+%=========================
+% Slide 4: Design – Environment and State Representation
+%=========================
+\begin{frame}{Design: Environment and State Representation}
+\small
+
+\textbf{State at decision epoch $t$ (weekly):}
+\[
+  s_t=\big(X_{t-L+1:t},\,w_{t-1},\,m_t\big),
+  \qquad X_{t-L+1:t}\in\mathbb{R}^{N\times F\times L}
+\]
+
+\begin{itemize}\setlength{\itemsep}{3pt}
+  \item \textbf{Inputs $X$:} daily features per asset over a rolling window of $L$ days:  
+        returns/OHLCV, realized volatility, and technical indicators.
+  \item \textbf{Portfolio memory $w_{t-1}$:} previous weights to inform cost-aware rebalancing.
+  \item \textbf{Universe mask $m_t$:} top-$N$ assets by market cap, \textbf{reconstituted monthly}; ensures safe handling of listings/delistings.
+  \item \textbf{Lookback $L$:} e.g., $L$ daily observations; \textbf{actions are weekly} (every 7 days), features remain daily.
+  \item \textbf{Normalization:} per-asset expanding mean/std (no look-ahead); deterministic preprocessing for reproducibility.
+\end{itemize}
+
+\footnotesize Framework precedents: \citep{jiang2017framework,jiang2017cryptocurrency,betancourt2021dynamic}.
+
+\vspace{0.3em}
+{\scriptsize \textbf{Note.} We include previous weights $w_{t-1}$ in the state to inform feasible rebalances and stabilize value estimation (esp.\ for DQN/A2C).}
+\end{frame}
+
+
+%=========================
+% Slide 5: Design – Actions and Transitions
+%=========================
+\begin{frame}{Design: Actions and Transitions}
+\small
+
+\textbf{Action (long-only weekly rebalance):}
+\[
+  \hat w_t = f_\theta(s_t),\quad
+  \tilde w_t = \mathrm{softmax}(\hat w_t)\odot m_t,\quad
+  w_t = \frac{\tilde w_t}{\mathbf{1}^\top \tilde w_t}\in\Delta^N
+\]
+
+\textbf{Transition (advance by 7 calendar days):}
+\[
+  s_{t+1}=\big(X_{t-L+1+7:\;t+7},\,w_t,\,m_{t+1}\big)
+\]
+
+\begin{itemize}\setlength{\itemsep}{3pt}
+  \item \textbf{Constraints:} simplex (long-only), weights nonnegative and sum to 1; masking prevents allocation to inactive assets.
+  \item \textbf{Costs:} applied at rebalance via $c\,\lVert w_t-w_{t-1}\rVert_1$ (Binance spot fees).
+  \item \textbf{Optional:} \emph{no-trade band} $\delta$ — if $\lVert w_t-w_{t-1}\rVert_1<\delta$, skip trades to reduce micro-turnover; \emph{cash asset} can be included as an additional dimension in $X$ and $m_t$.
+\end{itemize}
+
+\end{frame}
+
+
+%=========================
+% Slide 6: Design – Reward Function (Cost-Aware)
+%=========================
+\begin{frame}{Design: Reward Function (Cost-Aware)}
+\small
+\begin{columns}[T,totalwidth=\textwidth]
+\begin{column}{0.5\textwidth}
+\textbf{Base reward (weekly):}
+{\footnotesize
+\[
+  r_{t+1}=\log\!\big(w_t^\top y_{t+1}\big)\;-\;c\,\lVert w_t - w_{t-1}\rVert_1,
+\]
+}
+\begin{itemize}\setlength{\itemsep}{3pt}
+  \item $y_{t+1}$: vector of \textbf{7-day price relatives} for each asset (weekly rebalancing).
+  \item $c$: \textbf{transaction cost per trade}, modeled from \href{https://www.binance.com/en/fee/schedule}{Binance} spot fees:
+        \textit{0.10\%} standard (non-VIP) or \textit{0.075\%} with BNB discount.
+\end{itemize}
+
+\end{column}
+
+\begin{column}{0.5\textwidth}
+\textbf{Optional risk-adjusted reward:}
+{\footnotesize
+\[
+  r'_{t+1} = r_{t+1} \;-\; \lambda\,\mathrm{Risk}(r_{t-H:t}),
+\]
+}
+\begin{itemize}\setlength{\itemsep}{3pt}
+  \item $\mathrm{Risk}(\cdot)$: rolling downside volatility, drawdown, or \textbf{CVaR}; $\lambda$ tunes risk aversion.
+  \item Encourages smoother policies under heavy tails while preserving growth incentives.
+\end{itemize}
+\end{column}
+\end{columns}
+
+\vspace{0.35em}
+{\footnotesize
+References: (i) Fee deduction in reward is explicit in crypto RL \citep{jiang2017cryptocurrency,jiang2017framework,cui2023cvar} and DQN crypto portfolios \citep{lucarelli2020dqncrypto}. 
+(ii) Risk-aware objectives (e.g., Sharpe/volatility penalties) are implemented in DQN reward shaping \citep{lucarelli2020dqncrypto}.
+}
+
+\end{frame}
+
+
+%=========================
+% Slide 7: Design – Agent–Environment Interaction Loop
+%=========================
+\begin{frame}{Design: Agent–Environment Interaction Loop}
+\small
+
+\textbf{Weekly decision cycle (every 7 calendar days):}
+\begin{enumerate}\setlength{\itemsep}{1pt}
+  \item Observe $s_t$ (features from last $L$ days), current weights $w_{t-1}$.
+  \item \textbf{Choose action}:
+    \begin{itemize}\setlength{\itemsep}{0pt}
+      \item \emph{LinUCB}: pick arm/tilt $a_t$ by UCB score; map to weight adjustment \citep{li2010linucb}.
+      \item \emph{DQN}: pick discrete rebalancing move $\arg\max_a Q_\psi(s_t,a)$ with $\epsilon$-greedy \citep{mnih2015dqn,vanhasselt2016ddqn,wang2016dueling}.
+      \item \emph{A2C / REINFORCE}: sample weights from softmax policy $\pi_\theta(\cdot|s_t)$ \citep{mnih2016a3c, williams1992reinforce}.
+    \end{itemize}
+  \item Execute trade; update portfolio $w_t$; compute reward $r_{t+1}=\log(w_t^\top y_{t+1})-c\|w_t-w_{t-1}\|_1$.
+  \item \textbf{Update}: LinUCB via ridge updates; DQN via TD loss with replay/target; A2C via advantage actor--critic; REINFORCE via Monte Carlo with baseline.
+\end{enumerate}
+
+\vspace{0.25em}
+{\scriptsize
+\textbf{Per-method updates.}
+LinUCB: online ridge updates \citep{li2010linucb};
+DQN: TD loss with replay + target (Double/Dueling optional) \citep{mnih2015dqn,vanhasselt2016ddqn,wang2016dueling};
+A2C: advantage actor--critic with entropy \citep{mnih2016a3c};
+REINFORCE: Monte Carlo with baseline \citep{williams1992reinforce}.
+}
+\end{frame}
+
+
+% =========================
+% Section 4: Algorithms
+% =========================
+\section{Algorithms}
+
+%=========================
+% Slide: Algorithms – LinUCB, DQN, REINFORCE, A2C
+%=========================
+\begin{frame}{Algorithms (Choose Three): LinUCB, DQN, A2C, and REINFORCE (Baseline)}
+\footnotesize
+\begin{tabular}{p{1.8cm}p{2.2cm}p{1.8cm}p{7.5cm}}
+\toprule
+\textbf{Algorithm} & \textbf{Policy Type} & \textbf{Data Regime} & \textbf{Key Idea / Objective} \\
+\midrule
+\textbf{LinUCB} \citep{li2010linucb} & Contextual bandit (linear) & Online, per-decision & Choose arm/tilt $a_t$ maximizing the value function; map selection to portfolio tilt on simplex (weekly). \\
+\textbf{DQN} \citep{lucarelli2020dqncrypto, mnih2015dqn,vanhasselt2016ddqn,wang2016dueling} & Value-based (discrete) & Off-policy w/ replay & Discretize rebalancing moves (e.g., $\pm 5\%$ shifts); learn $Q(s,a)$ with target network, Double/Dueling variants; argmax action per week. \\
+\textbf{A2C} \citep{yang2020ensemble, mnih2016a3c} & Actor--Critic (stochastic) & On-policy (batched) & Policy $\pi_\theta(a|s)$ outputs weights via softmax; critic $V_\phi(s)$ for baseline; advantage updates with entropy bonus. \\
+\textbf{REINFORCE + baseline} \citep{jiang2017cryptocurrency, williams1992reinforce} & Policy gradient (stochastic/det.) & On-policy (episodic) & Directly optimize expected return; softmax to enforce simplex; subtract learned/value baseline to reduce variance. \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.6em}
+\textbf{Simplex \& Costs:} All methods enforce $w_i\!\ge\!0,~\sum_i w_i\!=\!1$ (softmax or projection). Reward uses cost-aware log-return: $r_{t+1}=\log(w_t^\top y_{t+1})-c\,\|w_t-w_{t-1}\|_1$ (weekly).
+\end{frame}
+
+
+
+% =========================
+% Section 5: Experimental Setup
+% =========================
+\section{Experimental Setup}
+
+%=========================
+% Slide 9: Experimental Setup – Data and Baselines
+%=========================
+\begin{frame}{Experimental Setup: Data and Baselines}
+\small
+\begin{columns}[T,totalwidth=\textwidth]
+\begin{column}{0.5\textwidth}
+\textbf{Data and Sampling}
+\small{
+\begin{itemize}\setlength{\itemsep}{0pt}
+  \item \textbf{Assets:} top-10 cryptocurrencies by market capitalization (excluding stablecoins), reconstituted monthly.
+  \item \textbf{Cadence:} daily OHLCV features; \textbf{weekly rebalancing} every 7 calendar days.
+  \item \textbf{Period:} January 2019 – October 2025.
+  \item \textbf{Splits:} Train (2019–2021), Validation (2022), Test (2023–2025).
+  \item \textbf{Lookback:} $L = 30$ daily observations per asset; deterministic preprocessing, no look-ahead.
+  \item \textbf{Transaction Costs:} $c=0.0010$ (Binance spot fees).
+\end{itemize}}
+\end{column}
+
+\begin{column}{0.5\textwidth}
+\textbf{Baselines (Long-Only, Weekly Rebalance)}
+\begin{itemize}\setlength{\itemsep}{0pt}
+  \item \textbf{Equal-Weight (EW):} $w_i = 1/N$; naive diversification benchmark.
+  \item \textbf{Market-Cap Weight (CapW):} weights proportional to free-float market capitalization.
+  \item \textbf{Mean–Variance (MVO):} classical Markowitz \citep{markowitz1952portfolio};  
+        $\max_{w\ge0,\,1^\top w=1}\, w^\top\hat\mu - \frac{\lambda}{2}w^\top\hat\Sigma w$,  
+        estimated from a 60-day rolling window.
+\end{itemize}
+\footnotesize Framework references: \citep{lucarelli2020dqncrypto,jiang2017cryptocurrency,mnih2016a3c,yang2020ensemble,li2010linucb}.
+\end{column}
+
+
+\end{columns}
+
+\vspace{0.3em}
+{\scriptsize
+\textbf{Implementation anchors.}
+DQN discretization and fee handling follow \citep{lucarelli2020dqncrypto};
+REINFORCE softmax-weights and fee-aware reward follow \citep{jiang2017cryptocurrency};
+A2C actor/critic training follows \citep{mnih2016a3c,yang2020ensemble};
+LinUCB contextual decision rule follows \citep{li2010linucb}.
+}
+\end{frame}
+
+
+% =========================
+% Section 6: Evaluation
+% =========================
+\section{Evaluation}
+
+%=========================
+% Slide 10: Evaluation – Metrics and Reporting Protocol
+%=========================
+\begin{frame}{Evaluation: Metrics and Reporting Protocol}
+\scriptsize
+\setlength{\itemsep}{1.5pt}\setlength{\parskip}{0pt}\setlength{\topsep}{1pt}
+\begin{columns}[T,totalwidth=\textwidth]
+\begin{column}{0.7\textwidth}
+\textbf{1. Profitability}
+\begin{itemize}
+  \item \textbf{Cumulative wealth:} $W_T=\prod_{t=1}^T(w_t^\top y_t)$.
+  \item \textbf{Annualized return (CAGR):} $(W_T)^{1/(T/52)} - 1$ (weekly cadence).
+  \item \textbf{Excess return:} vs.\ Equal-Weight (EW) and Market-Cap (CapW) baselines.
+\end{itemize}
+
+\textbf{2. Risk}
+\begin{itemize}
+  \item \textbf{Volatility (annualized):} $\sigma_{\text{ann}}=\sigma_{\text{weekly}}\sqrt{52}$.
+  \item \textbf{Sharpe ratio:} $(\mu - r_f)/\sigma_{\text{ann}}$.
+  \item \textbf{Maximum Drawdown (MDD):} largest peak-to-trough portfolio loss.
+\end{itemize}
+
+\textbf{3. Efficiency}
+\begin{itemize}
+  \item \textbf{Turnover:} $\tau=\frac{1}{T}\sum_t \lVert w_t-w_{t-1}\rVert_1$.
+  \item \textbf{Fee drag:} realized cost $c\tau$ using Binance fee (0.10\% per trade).
+  \item \textbf{Stability:} variance of weekly returns across rebalancing periods.
+\end{itemize}
+\end{column}
+
+
+\begin{column}{0.3\textwidth}
+\textbf{Reporting Protocol}
+\begin{itemize}
+  \item Model selection via validation Sharpe; final results on untouched test period.
+  \item 3 random seeds per agent; report mean ± standard deviation.
+  \item Robustness checks: alternate universes (top-5/top-15) and cost levels.
+\end{itemize}
+
+{\footnotesize
+References:.
+(i) LinUCB \citep{li2010linucb} (ii) DQN \citep{lucarelli2020dqncrypto};
+(iii) A2C/ \citep{mnih2016a3c,williams1992reinforce};
+(iv) REINFORCE \citep{jiang2017cryptocurrency,jiang2017framework}
+}
+\end{column}
+\end{columns}
+\end{frame}
+
+
+\begin{frame}[allowframebreaks]{References}
+\footnotesize   % (kept, but AtBeginBibliography also enforces)
+\bibliography{bibliography}
+\end{frame}
+
+\end{document}
