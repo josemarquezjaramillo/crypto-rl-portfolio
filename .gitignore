@@ -1,0 +1,98 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Data files
+*.npz
+*.csv
+*.json
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.parquet
+datasets/
+
+# Cache directory (large processed tensors)
+cache/
+*.npz
+
+# Model files
+*.model
+*.weights
+*.h5
+models/
+checkpoints/
+saved_models/
+
+# Logs
+*.log
+logs/
+tensorboard/
+wandb/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# API keys and secrets
+config.ini
+secrets.yaml
+api_keys.txt
+*.key
+*.pem
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
