@@ -96,3 +96,6 @@ api_keys.txt
 *.swp
 *.swo
 *~
+
+# Ignore datasets
+*dataset_*/
