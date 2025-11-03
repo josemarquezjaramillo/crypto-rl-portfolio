@@ -175,11 +175,39 @@ The environment implements this logic via the `align_weights()` static method, w
 
 
 ---
-## 4. Agent Classes (Planned Architectures)
+## 4. Agent Classes
 
-**Note:** This section describes the planned agent architectures for the project. The environment implementation (`environment/environment.py`) provides the common MDP interface that all agents will use. Agent implementations are scheduled for future development.
+All agents interact with the same environment API through a common base infrastructure defined in `agents/base_agent.py`. This module provides abstract base classes and utilities that handle training loops, metrics tracking, logging, and checkpointing—leaving concrete agents to focus on their specific learning algorithms.
 
-All agents interact with the same environment API. The only difference is how they choose an allocation w_t.
+### 4.0 Base Agent Infrastructure
+
+The `BaseAgent` abstract class (inspired by Stable-Baselines3) provides common functionality for all agent implementations:
+
+**Core Components:**
+- `AgentConfig`: Configuration dataclass with agent name, random seed, log directory, and checkpoint frequency
+- `EpisodeMetrics`: Structured performance data capturing 10 portfolio-specific metrics (rewards, Sharpe ratio, max drawdown, turnover, transaction costs, etc.) plus agent-specific metrics
+- `MetricsTracker`: Lightweight metrics collection during episodes with aggregation, summary statistics, and pandas DataFrame export for analysis
+
+**Abstract Methods (must implement in subclasses):**
+- `select_action(obs, deterministic)`: Choose portfolio weights from observation
+- `update(obs, action, reward, next_obs, done)`: Learn from experience (returns optional training metrics dict)
+- `save(path)` / `load(path)`: Model serialization/deserialization
+
+**Template Methods (common training logic):**
+- `train_episode()`: Handles environment interaction, metrics tracking, and checkpointing; calls agent-specific `update()` at each step
+- `evaluate(n_episodes, deterministic)`: Evaluation without training; returns both aggregate statistics and episode-level details for plotting
+- Hooks: `on_episode_start()` and `on_episode_end()` for agent-specific episode initialization/finalization (e.g., REINFORCE episode buffer management)
+
+**Logging & Analysis:**
+- CSV training logs with base columns (episode, reward, Sharpe, drawdown, turnover, etc.) plus flexible agent-specific columns via `get_agent_log_columns()` hook
+- Automatic checkpointing every N episodes with metadata (recent performance, timestamp)
+- `get_training_history()`: Returns episode-by-episode metrics for learning curve plots
+- `get_performance_summary()`: Returns aggregate statistics for comparison tables
+- `MetricsTracker.to_dataframe()`: Exports all episodes as pandas DataFrame for analysis/visualization
+
+This design uses the Template Method pattern: common training/evaluation logic is implemented once in `BaseAgent`, while agent-specific behavior (action selection, learning updates) is delegated to subclass implementations. This ensures all agents have consistent metrics tracking and logging, facilitating fair comparison in Week 5 evaluation.
+
+**Implementation Status:** Base infrastructure complete (`agents/base_agent.py`, 633 lines). Concrete agents (LinUCB, DQN, REINFORCE) scheduled for Weeks 2-4.
 
 
 ### 4.1 Policy-Gradient with Baseline (REINFORCE / A2C / PPO-style)
@@ -208,9 +236,16 @@ This can be implemented as:
 - discounted Thompson Sampling / UCB on arm statistics, or
 - a neural contextual bandit that outputs arm scores given the state.
 
-This formulation aligns with “bandit networks” for portfolio selection under nonstationary returns and risk, where each allocation is a competing arm and the goal is to adaptively switch among them [huo2017riskbandit, fonseca2024banditnets].
+This formulation aligns with "bandit networks" for portfolio selection under nonstationary returns and risk, where each allocation is a competing arm and the goal is to adaptively switch among them [huo2017riskbandit, fonseca2024banditnets].
 
-The contextual bandit does not explicitly optimize long-horizon value functions. Instead, it treats each day’s allocation choice as an immediate reward maximization problem, which can be a strong baseline in highly nonstationary markets.
+The contextual bandit does not explicitly optimize long-horizon value functions. Instead, it treats each day's allocation choice as an immediate reward maximization problem, which can be a strong baseline in highly nonstationary markets.
+
+**Concrete Agent Development Timeline:**
+- Week 2 (Nov 4-10): `LinUCBAgent` extending `BaseAgent` (Taylor)
+- Week 3 (Nov 11-17): `DQNAgent` extending `BaseAgent` (Jose)
+- Week 4 (Nov 18-24): `REINFORCEAgent` extending `BaseAgent` (Taylor)
+
+Each concrete agent will implement the 4 abstract methods (`select_action`, `update`, `save`, `load`) and optionally override hooks (`on_episode_start`, `on_episode_end`) or logging columns (`get_agent_log_columns`) as needed. The common `BaseAgent` infrastructure handles all training loop mechanics, metrics aggregation, and logging.
 
 
 ---
