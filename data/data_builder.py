@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
-from data_loader import (
+from data.data_loader import (
     load_ohlcv,
     get_available_coins,
     load_index_constituents,
@@ -204,6 +204,12 @@ def build_panels(start_date: str, end_date: str):
     # Some datasets might already be tz-naive; handle gracefully:
     if raw["timestamp"].dt.tz is not None:
         raw["timestamp"] = raw["timestamp"].dt.tz_convert(None)
+    
+    # CRITICAL: Normalize to date only (remove time component)
+    # This prevents DST-related timestamp mismatches where database switches
+    # from 04:00:00 to 05:00:00 UTC, causing reindex to create NaN rows
+    raw["timestamp"] = raw["timestamp"].dt.normalize()
+    
     raw = raw.sort_values(["timestamp", "coin_id"])
 
     def _pivot(col):
@@ -218,6 +224,7 @@ def build_panels(start_date: str, end_date: str):
     vol   = _pivot("volume")
 
     # Reindex each panel to full daily freq (7/7 crypto calendar)
+    # After normalization, all timestamps are at midnight so date_range will match
     full_idx = pd.date_range(close.index.min(), close.index.max(), freq="D")
     close = close.reindex(full_idx)
     high  = high.reindex(full_idx)

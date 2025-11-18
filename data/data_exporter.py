@@ -6,7 +6,7 @@ from datetime import datetime
 
 # We assume the finalized tensor-building logic (gap repair, eligibility, etc.)
 # lives in tensor_builder.py with the following imports:
-from data_builder import (
+from data.data_builder import (
     LOOKBACK,                 # should be 60
     build_panels,             # (start_date, end_date) -> close_df, high_df, low_df, vol_df
     build_monthly_membership, # (close_df, start_date, end_date) -> membership_df
@@ -261,8 +261,11 @@ def main():
     )
 
     # 9. Write metadata.json
+    from datetime import datetime
+    
     metadata = {
         "dataset_version": DATASET_VERSION,
+        "export_date": datetime.now().strftime("%Y-%m-%d"),
         "raw_start_date": RAW_START_DATE,
         "dev_start_date": DEV_START_DATE,
         "dev_end_date": DEV_END_DATE,
@@ -281,8 +284,18 @@ def main():
             "gap repair up to 5 days, no cash asset, long-only fully "
             "invested portfolios, and discontiguous regime validation windows. "
             "Forward returns are provided only for reward calculation; they "
-            "are not part of the observation tensor."
+            "are not part of the observation tensor. "
+            "CRITICAL FIX (2025-11-17): Timestamp normalization applied via "
+            ".dt.normalize() to prevent DST-related data loss during reindexing. "
+            "All timestamps normalized to midnight (00:00:00) before pivoting."
         ),
+        "data_quality": {
+            "total_days": len(dev_days) + len(test_days),
+            "dev_days": len(dev_days),
+            "test_days": len(test_days),
+            "verification_date": datetime.now().strftime("%Y-%m-%d"),
+            "dst_fix_applied": True,
+        },
         # Citations you will surface in the paper / thesis:
         "citations": [
             "jiang2016drlt",

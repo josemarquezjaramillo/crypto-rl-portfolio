@@ -966,8 +966,8 @@ class PortfolioEnv:
 
         surviving_sum = float(np.sum(survive_weights)) if survive_weights else 0.0
 
-        if surviving_sum <= 0.0:
-            # All old weights exited: return equal-weight or zeros
+        if surviving_sum < 1e-8:
+            # All old weights exited or surviving_sum too small: return equal-weight
             # (Will be reallocated by agent's next action)
             return PortfolioEnv.simplex_projection(w_new)
 
@@ -1085,4 +1085,6 @@ class PortfolioEnv:
         # Safeguard against negatives from bad data (should not happen post-cleaning)
         y = np.maximum(y, 1e-12, dtype=np.float32)
         gross = float(np.dot(w_exec, y))
+        # Safeguard against gross <= 0 which would cause log to be -inf or NaN
+        gross = max(gross, 1e-12)
         return float(np.log(gross))
