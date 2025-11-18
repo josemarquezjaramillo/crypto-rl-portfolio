@@ -7,12 +7,17 @@ for cryptocurrency portfolio management using reinforcement learning.
 Available Agents
 ----------------
 - BaseAgent: Abstract base class with common infrastructure
-- (LinUCB, DQN, REINFORCE to be implemented in Weeks 2-4)
+- DQNAgent: Deep Q-Network for portfolio allocation (Week 3)
+- (REINFORCE, LinUCB to be implemented in Week 4)
 
 Usage
 -----
 >>> from agents.base_agent import BaseAgent, AgentConfig, EpisodeMetrics
->>> # Concrete agents will be imported as they're implemented
+>>> from agents.dqn import DQNAgent, DQNConfig
+>>> 
+>>> # Configure and create DQN agent
+>>> config = DQNConfig(name="DQN_v1", buffer_size=10000, learning_rate=1e-4)
+>>> agent = DQNAgent(config, env)
 """
 
 from agents.base_agent import (
@@ -22,9 +27,14 @@ from agents.base_agent import (
     MetricsTracker,
 )
 
+# Import DQN components (Week 3)
+from agents.dqn import DQNAgent, DQNConfig
+
 __all__ = [
     'BaseAgent',
     'AgentConfig',
     'EpisodeMetrics',
     'MetricsTracker',
+    'DQNAgent',
+    'DQNConfig',
 ]
