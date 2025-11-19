@@ -163,6 +163,8 @@ class StepInfo(TypedDict, total=False):
     universe_event: Optional[str]         # "monthly_roll","entry","exit", or None
     portfolio_value: float
     constraints_active: Dict[str, bool]   # {"simplex":..., "nonneg":..., "cap":..., "turnover":...}
+    constraint_violation: bool            # True if action violated constraints
+    violation_type: Optional[str]         # "concentration", "simplex", "non_negative", or None
 
 
 # ---------- Config ----------
@@ -261,6 +263,8 @@ class EnvConfig:
     discrete_action_map: Optional[npt.NDArray[np.float32]] = None
     random_seed: int = 42
     strict_projection: bool = True
+    constraint_penalty: float = -10.0  # Penalty for constraint violations
+    terminate_on_violation: bool = False  # Continue episode after violation?
     log_dir: Optional[Path] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -589,9 +593,20 @@ class PortfolioEnv:
 
     def execute_action(self, action: npt.NDArray[np.float32] | int) -> Tuple[Obs, float, bool, StepInfo]:
         """
-        Apply action at date t, project to feasible set, compute net reward using
-        precomputed forward returns for t->t+1, advance one day, and return:
-        (next_obs, reward, done, info).
+        Apply action at date t, check feasibility (or project if strict_projection=True),
+        compute net reward using precomputed forward returns for t->t+1, advance one day,
+        and return: (next_obs, reward, done, info).
+        
+        Constraint Handling
+        -------------------
+        If strict_projection=False (penalty-based, recommended for RL):
+            - Check if proposed weights are feasible
+            - If infeasible: return penalty reward, keep portfolio at prev_w
+            - If feasible: execute normally
+        
+        If strict_projection=True (legacy projection mode):
+            - Always project to feasible set (old behavior)
+            - Useful for baseline comparisons
         """
         self._assert_not_done()
 
@@ -607,8 +622,46 @@ class PortfolioEnv:
                 raise TypeError("Continuous mode expects a numpy array of target weights.")
             w_prop = action.astype(np.float32, copy=False)
 
-        # Project to feasible & compute turnover
-        w_exec, constraints = self.project_to_feasible(w_prop, self.prev_w)
+        # Check feasibility (penalty-based mode) or project (strict mode)
+        if not self.cfg.strict_projection:
+            # Penalty-based constraint enforcement (recommended for RL)
+            if not self._is_feasible(w_prop):
+                # Constraint violation: penalize and reject action
+                violation_type = self._get_violation_type(w_prop)
+                reward = float(self.cfg.constraint_penalty)
+                done = bool(self.cfg.terminate_on_violation)
+                
+                info: StepInfo = StepInfo(
+                    date=self.date_t,
+                    tradable_assets=list(self.asset_ids_t),
+                    proposed_weights=w_prop if self.cfg.action_mode == "continuous" else None,
+                    executed_weights=self.prev_w.copy(),  # Portfolio remains at prev_w
+                    discrete_action_idx=discrete_idx,
+                    gross_log_return=0.0,  # No execution
+                    turnover=0.0,  # No rebalancing
+                    transaction_cost=0.0,
+                    reward_net=reward,
+                    universe_event=None,
+                    portfolio_value=float(self.portfolio_value),
+                    constraints_active={"nonneg": False, "simplex": False, "cap": False, "turnover": False},
+                    constraint_violation=True,
+                    violation_type=violation_type,
+                )
+                
+                # Log step metrics if logging enabled
+                if self.cfg.log_dir is not None:
+                    self._log_step(info, action)
+                
+                # Return current state (no progression to next day on violation)
+                obs_current = self.get_state()
+                return obs_current, reward, done, info
+            
+            # Feasible action: execute normally
+            w_exec = w_prop
+            constraints = {"nonneg": False, "simplex": False, "cap": False, "turnover": False}
+        else:
+            # Legacy projection mode (backward compatibility)
+            w_exec, constraints = self.project_to_feasible(w_prop, self.prev_w)
 
         # Compute one-step gross log return and costs
         gross_log = self.compute_gross_log_return(w_exec, self.fwd_r_next)
@@ -640,6 +693,8 @@ class PortfolioEnv:
             universe_event=None,  # filled if your backend flags month roll/entries/exits
             portfolio_value=float(self.portfolio_value),
             constraints_active=constraints,
+            constraint_violation=False,
+            violation_type=None,
         )
 
         # Log step metrics if logging enabled
@@ -978,6 +1033,61 @@ class PortfolioEnv:
         # Final projection for numerical safety
         w_new = PortfolioEnv.simplex_projection(w_new)
         return w_new
+
+    def _is_feasible(self, weights: npt.NDArray[np.float32]) -> bool:
+        """
+        Check if portfolio weights satisfy all constraints.
+        
+        Parameters
+        ----------
+        weights : np.ndarray
+            Proposed portfolio weights [A_t]
+        
+        Returns
+        -------
+        feasible : bool
+            True if weights satisfy all constraints
+        """
+        if weights.size == 0:
+            return True
+        
+        # Check non-negativity (long-only)
+        if (weights < -1e-6).any():
+            return False
+        
+        # Check simplex constraint (sum = 1)
+        if abs(weights.sum() - 1.0) > 1e-4:
+            return False
+        
+        # Check per-asset concentration cap
+        if self.cfg.max_weight_per_asset is not None:
+            if weights.max() > self.cfg.max_weight_per_asset + 1e-6:
+                return False
+        
+        return True
+    
+    def _get_violation_type(self, weights: npt.NDArray[np.float32]) -> str:
+        """
+        Identify which constraint was violated.
+        
+        Parameters
+        ----------
+        weights : np.ndarray
+            Proposed portfolio weights [A_t]
+        
+        Returns
+        -------
+        violation_type : str
+            One of: 'concentration', 'simplex', 'non_negative', 'unknown'
+        """
+        if (weights < -1e-6).any():
+            return 'non_negative'
+        elif abs(weights.sum() - 1.0) > 1e-4:
+            return 'simplex'
+        elif self.cfg.max_weight_per_asset is not None and weights.max() > self.cfg.max_weight_per_asset + 1e-6:
+            return 'concentration'
+        else:
+            return 'unknown'
 
     def project_to_feasible(self,
                             w_prop: npt.NDArray[np.float32],

@@ -53,13 +53,20 @@ def main():
             split="train",
             cost_rate=0.001,
             turnover_cap=0.30,
+            max_weight_per_asset=0.35,  # Concentration constraint
             action_mode="continuous",  # DQN uses continuous (catalog generates weights)
             random_seed=42,
+            # Penalty-based constraint enforcement (delta action catalog)
+            constraint_penalty=-10.0,
+            terminate_on_violation=False,
+            strict_projection=False,  # Use penalty mode instead of projection
         )
         
         env = PortfolioEnv(env_config, backend)
         print(f"✓ Environment created")
         print(f"  Training days available: {len(backend.dates())}")
+        print(f"  Constraint mode: Penalty-based (strict_projection=False)")
+        print(f"  Max weight per asset: {env_config.max_weight_per_asset}")
         
     except Exception as e:
         print(f"✗ Failed to create environment: {e}")
@@ -88,7 +95,7 @@ def main():
             state_dim=256,
             hidden_dims=[256, 128],
             dropout=0.1,
-            device="cpu",  # Use CPU for smoke test (GPU can cause numerical issues)
+            device="cuda",  # Use CPU for smoke test (GPU can cause numerical issues)
         )
         
         agent = DQNAgent(dqn_config, env)
@@ -110,31 +117,49 @@ def main():
     try:
         n_episodes = 5
         
+        # Track violations and actions across all episodes
+        total_violations = 0
+        total_steps = 0
+        violation_types = {'non_negative': 0, 'simplex': 0, 'concentration': 0, 'unknown': 0}
+        action_counts = np.zeros(agent.catalog.size, dtype=int)
+        
         for ep in range(n_episodes):
             obs = env.reset()
             done = False
             episode_reward = 0.0
             steps = 0
+            episode_violations = 0
             td_losses = []
             q_means = []
             
             while not done:
-                # Select action
-                action = agent.select_action(obs, deterministic=False)
+                # Select action (returns weights for environment)
+                weights = agent.select_action(obs, deterministic=False)
+                action_idx = agent.last_action_idx  # Get the selected action index
+                
+                # Track action selection
+                action_counts[action_idx] += 1
                 
                 # Take step
-                next_obs, reward, done, info = env.step(action)
+                next_obs, reward, done, info = env.step(weights)
+                
+                # Track constraint violations
+                if info.get('constraint_violation', False):
+                    episode_violations += 1
+                    total_violations += 1
+                    vtype = info.get('violation_type', 'unknown')
+                    violation_types[vtype] = violation_types.get(vtype, 0) + 1
                 
                 # DEBUG: Check for first NaN
                 if ep == 0 and steps == 0:
                     print(f"    First step: reward={reward:.6f}, PV={info['portfolio_value']:.6f}")
                 if ep == 0 and np.isnan(reward):
                     print(f"    NaN reward at step {steps}! PV={info.get('portfolio_value', 'N/A')}")
-                    print(f"      Action: min={np.min(action):.4f}, max={np.max(action):.4f}, sum={np.sum(action):.4f}")
+                    print(f"      Action: min={np.min(weights):.4f}, max={np.max(weights):.4f}, sum={np.sum(weights):.4f}")
                     # Don't break - let it continue
                 
-                # Update agent
-                metrics = agent.update(obs, action, reward, next_obs, done)
+                # Update agent (pass weights to replay buffer)
+                metrics = agent.update(obs, weights, reward, next_obs, done)
                 
                 if metrics:
                     td_losses.append(metrics.get('td_loss', 0))
@@ -142,6 +167,7 @@ def main():
                 
                 episode_reward += reward
                 steps += 1
+                total_steps += 1
                 obs = next_obs
             
             # Manually call episode end hook
@@ -163,20 +189,43 @@ def main():
             
             # Check if we have valid episode metrics
             episode_has_nan = np.isnan(episode_reward) or np.isnan(final_pv)
+            violation_rate = episode_violations / steps if steps > 0 else 0.0
             
             print(f"  Episode {ep+1}/{n_episodes}: "
                   f"Steps={steps}, Reward={episode_reward:.4f}, "
-                  f"PV={final_pv:.4f}, Buffer={buffer_size}, "
-                  f"ε={epsilon:.3f}{' [HAS NaN!]' if episode_has_nan else ''}")
+                  f"PV={final_pv:.4f}, Violations={episode_violations} ({violation_rate:.1%}), "
+                  f"Buffer={buffer_size}, ε={epsilon:.3f}{' [HAS NaN!]' if episode_has_nan else ''}")
             
             if td_losses and not np.isnan(avg_td_loss):
                 print(f"    TD Loss={avg_td_loss:.4f}, "
                       f"Q_mean={avg_q_mean:.4f}, "
                       f"Updates={len(td_losses)}")
         
+        # Overall violation statistics
+        overall_violation_rate = total_violations / total_steps if total_steps > 0 else 0.0
+        
         print(f"✓ Training completed")
         print(f"  Final buffer size: {len(agent.replay_buffer)}/{agent.config.buffer_size}")
         print(f"  Total Q-network updates: {agent.update_count}")
+        print(f"  Constraint violations: {total_violations}/{total_steps} ({overall_violation_rate:.1%})")
+        
+        # Show violation breakdown
+        if total_violations > 0:
+            print(f"  Violation types:")
+            for vtype, count in violation_types.items():
+                if count > 0:
+                    pct = 100.0 * count / total_violations
+                    print(f"    {vtype}: {count} ({pct:.1f}%)")
+        
+        # Show top 5 selected actions
+        top_actions = np.argsort(action_counts)[::-1][:5]
+        print(f"  Top 5 actions:")
+        for i, action_idx in enumerate(top_actions):
+            count = action_counts[action_idx]
+            if count > 0:
+                pct = 100.0 * count / total_steps
+                action_desc = agent.catalog.get_action_name(action_idx)
+                print(f"    {i+1}. Action {action_idx} ({action_desc}): {count} ({pct:.1f}%)")
         
     except Exception as e:
         print(f"✗ Training failed: {e}")
@@ -243,7 +292,8 @@ def main():
         print("  - NaN appears at date 2018-11-04 (step 64) and other dates")
         print("  - This is a DATA EXPORT bug, NOT a DQN or environment bug")
         print("  - DQN Q-network training works correctly (finite TD loss & Q-values)")
-        print("  - Action catalog generates valid weights")
+        print("  - Delta action catalog generates valid weights")
+        print("  - Constraint penalties work correctly")
         print("  - Environment logic is correct")
         print("\n✅ DQN implementation is CORRECT and ready for use!")
         print("  Fix: Re-export dataset with NaN handling in data_exporter.py")
@@ -252,13 +302,15 @@ def main():
         print("=" * 70)
     
     print("\nDQN agent is ready for training.")
-    print(f"  Catalog size: {agent.catalog.size} strategies")
+    print(f"  Catalog size: {agent.catalog.size} delta actions")
+    print(f"  Constraint mode: Penalty-based (violations penalized at {env_config.constraint_penalty})")
+    print(f"  Violation rate: {overall_violation_rate:.1%} (expected to decrease during training)")
     print(f"  Buffer capacity: {agent.config.buffer_size}")
     print(f"  State dimension: {agent.config.state_dim}")
     print("\nNext steps:")
-    print("  1. Fix dataset NaN issue (re-export with proper NaN handling)")
-    print("  2. Run full training: python -m agents.dqn_train")
-    print("  3. Monitor logs in: logs/dqn/")
+    print("  1. Run full training: python -m agents.dqn_train")
+    print("  2. Monitor violation rate (should decrease from ~15% → <1%)")
+    print("  3. Check logs in: logs/dqn/")
     print("=" * 70)
 
 

@@ -1,18 +1,19 @@
 """
 Deep Q-Network (DQN) agent for portfolio management.
 
-This module implements a DQN agent that learns to select portfolio allocations
-from a discrete catalog of strategies. The agent uses experience replay and
-target networks to stabilize learning in the nonstationary crypto market.
+This module implements a DQN agent that learns to select portfolio rebalancing
+actions from a discrete catalog of delta-based adjustments. The agent uses
+experience replay and target networks to stabilize learning in the nonstationary
+crypto market.
 
 Key Components:
-- Portfolio action catalog (discrete action space)
+- Delta action catalog (70 rebalancing actions: adjust, rotate, diversify, etc.)
 - Experience replay buffer (breaks temporal correlations)
 - Q-network with target network (stable TD learning)
 - ε-greedy exploration (exploration vs exploitation)
 
 Design follows:
-    - Lucarelli & Borrotti (2020): DQN for crypto trading
+    - Lucarelli & Borrotti (2020): DQN for crypto trading with delta actions
     - Mnih et al. (2015): Experience replay + target networks
     - BaseAgent infrastructure: Common training/evaluation logic
 
@@ -55,7 +56,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from agents.base_agent import BaseAgent, AgentConfig
-from agents.dqn.action_catalog import PortfolioCatalog
+from agents.dqn.action_catalog_delta import DeltaActionCatalog
 from agents.dqn.replay_buffer import ReplayBuffer
 from agents.dqn.networks import QNetwork, StateEncoder, copy_network_weights
 from environment.environment import PortfolioEnv, Obs
@@ -127,9 +128,9 @@ class DQNAgent(BaseAgent):
     """
     Deep Q-Network agent for portfolio management.
     
-    Learns to select portfolio strategies from a discrete catalog by
-    estimating Q-values (expected returns) for each strategy given the
-    current market state.
+    Learns to select portfolio rebalancing actions from a discrete catalog of
+    delta-based adjustments by estimating Q-values (expected returns) for each
+    action given the current market state and previous portfolio allocation.
     
     Parameters
     ----------
@@ -140,8 +141,8 @@ class DQNAgent(BaseAgent):
     
     Attributes
     ----------
-    catalog : PortfolioCatalog
-        Discrete action space (portfolio strategies)
+    catalog : DeltaActionCatalog
+        Discrete action space (delta-based rebalancing actions)
     replay_buffer : ReplayBuffer
         Experience replay buffer
     q_network : QNetwork
@@ -161,8 +162,8 @@ class DQNAgent(BaseAgent):
         
         self.config: DQNConfig = config  # Type hint for IDE
         
-        # Action catalog
-        self.catalog = PortfolioCatalog()
+        # Delta action catalog (70 rebalancing actions)
+        self.catalog = DeltaActionCatalog()
         self.n_actions = self.catalog.size
         
         # Replay buffer
@@ -248,8 +249,9 @@ class DQNAgent(BaseAgent):
         self.last_action_idx = action_idx
         self.last_q_values = q_values.cpu().numpy()
         
-        # Apply catalog strategy to get weights
-        weights = self.catalog.apply_strategy(action_idx, obs)
+        # Apply delta action to previous weights
+        prev_weights = obs['prev_weights']
+        weights = self.catalog.apply_action(action_idx, obs, prev_weights)
         
         return weights
     

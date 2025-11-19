@@ -1,6 +1,6 @@
 # Weekly Project Update
 
-**Date:** Tuesday, November 17, 2025  
+**Date:** Tuesday, November 18, 2025  
 **Name:** Jose Marquez Jaramillo  
 **Teammate:** Taylor Hawks  
 **Project:** Reinforcement Learning for Cryptocurrency Portfolio Management
@@ -47,7 +47,7 @@ Finally, I learned the value of **comprehensive smoke testing before full traini
 
 ## Teammate's Tasks & Accomplishments
 
-Based on my understanding, Taylor is scheduled to begin work on the **Week 4: REINFORCE+baseline implementation** starting November 18, 2025. As of this update (November 17), Week 4 has not yet started, so Taylor's work is pending. He will implement a policy gradient agent that extends our `BaseAgent` infrastructure and leverages the re-exported clean dataset from this week's DST bug fix. We have coordinated that Taylor will use a continuous action space approach (softmax over asset weights) rather than the discrete catalog used by DQN, which will allow us to compare these two action space designs in the final Week 5 evaluation. I've shared the smoke testing framework and dataset verification procedures with Taylor to help him avoid similar data quality issues during his implementation.
+Based on my understanding, Taylor is scheduled to begin work on the **Week 4: REINFORCE+baseline implementation** starting November 18, 2025. He will implement a policy gradient agent that extends our `BaseAgent` infrastructure and leverages the re-exported clean dataset from this week's DST bug fix. We have coordinated that Taylor will use a continuous action space approach (softmax over asset weights) rather than the discrete catalog used by DQN, which will allow us to compare these two action space designs in the final Week 5 evaluation. I've shared the smoke testing framework and dataset verification procedures with Taylor to help him avoid similar data quality issues during his implementation. Time permitting we will try an extend the work on REINFORCE+baseline to incorporate an A2C agent. 
 
 ---
 

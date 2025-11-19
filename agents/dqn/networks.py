@@ -159,7 +159,7 @@ class StateEncoder:
     def __init__(self, state_dim: int = 256, include_stats: bool = True):
         self.state_dim = state_dim
         self.include_stats = include_stats
-        self.device = 'cpu'  # Default device, can be set later
+        self.device = 'cuda'  # Default device, can be set later
         
         # Per-asset feature dimension: 4 OHLCV channels × 60 days + 1 prev_weight = 241
         self.per_asset_dim = 4 * 60 + 1
@@ -270,7 +270,7 @@ class StateEncoder:
         states = np.stack([self.encode(obs) for obs in obs_batch], axis=0)
         return states
     
-    def to_torch(self, states: npt.NDArray[np.float32], device: str = 'cpu') -> torch.Tensor:
+    def to_torch(self, states: npt.NDArray[np.float32], device: str = 'cuda') -> torch.Tensor:
         """
         Convert numpy states to torch tensors.
         
