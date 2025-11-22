@@ -122,33 +122,41 @@ class StateEncoder:
     """
     Encode variable-size observations into fixed-size state representations.
     
-    Handles the challenge of variable A_t (tradable assets change daily)
-    by pooling across the asset dimension. This allows the Q-network to
-    operate on a fixed input size.
+    Uses CANONICAL PADDING to preserve per-asset information:
+    - Load all unique assets from dataset (dev + test)
+    - Assign each asset a fixed position (alphabetical ordering)
+    - Pad observations to fixed size with zeros for absent assets
+    - Project to target dimension for Q-network input
     
-    Encoding Strategy:
-        1. Flatten per-asset features: [A_t, 4, 60] → [A_t, 240]
-        2. Concatenate with prev_weights: [A_t, 240] + [A_t] → [A_t, 241]
-        3. Average pool across assets: [A_t, 241] → [241]
-        4. Optional: Add global statistics (min, max, std) for richer representation
+    Key improvement over pooling: Q-network can now distinguish which assets 
+    are held and learn asset-specific Q-values (e.g., "increase BTC" vs 
+    "increase ETH"). This is critical for delta-based action catalogs where
+    the same action has different feasibility depending on portfolio composition.
     
     Parameters
     ----------
     state_dim : int
-        Output dimension of encoded state
-    include_stats : bool, optional
-        Whether to include min/max/std statistics (default: True)
+        Output dimension of encoded state (default: 256)
+    dataset_path : str
+        Path to dataset directory for loading canonical asset list
     
     Attributes
     ----------
     state_dim : int
         Fixed output dimension
+    canonical_assets : List[str]
+        Alphabetically sorted list of all assets in dataset
+    n_canonical : int
+        Number of canonical asset positions
+    raw_dim : int
+        Dimension before projection (n_canonical × 240 + n_canonical)
     
     Examples
     --------
-    >>> encoder = StateEncoder(state_dim=256)
+    >>> encoder = StateEncoder(state_dim=256, dataset_path="dataset_v1")
     >>> obs = {'features': np.random.randn(10, 4, 60),
-    ...        'prev_weights': np.random.randn(10)}
+    ...        'prev_weights': np.random.randn(10),
+    ...        'asset_ids': ['bitcoin', 'ethereum', ...]}
     >>> state = encoder.encode(obs)  # [256]
     >>> 
     >>> # Batch encoding
@@ -156,30 +164,53 @@ class StateEncoder:
     >>> states = encoder.encode_batch(obs_batch)  # [3, 256]
     """
     
-    def __init__(self, state_dim: int = 256, include_stats: bool = True):
+    def __init__(self, state_dim: int = 256, dataset_path: str = "dataset_v1"):
         self.state_dim = state_dim
-        self.include_stats = include_stats
-        self.device = 'cuda'  # Default device, can be set later
+        self.dataset_path = dataset_path
+        self.device = 'cpu'  # Will be set via .to(device)
         
-        # Per-asset feature dimension: 4 OHLCV channels × 60 days + 1 prev_weight = 241
-        self.per_asset_dim = 4 * 60 + 1
+        # Load canonical asset ordering from dataset
+        self.canonical_assets = self._load_canonical_assets()
+        self._asset_to_idx = {asset: i for i, asset in enumerate(self.canonical_assets)}
         
-        # Calculate feature dimensions
-        if include_stats:
-            # Pooled [241] + min [241] + max [241] + std [241] = 964
-            self.raw_dim = self.per_asset_dim * 4
-        else:
-            # Just pooled [241]
-            self.raw_dim = self.per_asset_dim
+        # Compute dimensions
+        self.n_canonical = len(self.canonical_assets)
+        self.per_asset_features = 4 * 60  # OHLCV × lookback
+        self.raw_dim = self.n_canonical * self.per_asset_features + self.n_canonical
         
-        # Linear projection to state_dim if needed
-        if self.raw_dim != state_dim:
-            self.projection = nn.Linear(self.raw_dim, state_dim)
-            # Initialize weights
-            nn.init.kaiming_normal_(self.projection.weight, nonlinearity='relu')
-            nn.init.constant_(self.projection.bias, 0.0)
-        else:
-            self.projection = None
+        # Projection layer (always needed, raw_dim is large)
+        self.projection = nn.Linear(self.raw_dim, state_dim)
+        nn.init.kaiming_normal_(self.projection.weight, nonlinearity='relu')
+        nn.init.constant_(self.projection.bias, 0.0)
+    
+    def _load_canonical_assets(self) -> List[str]:
+        """
+        Load all unique assets across dataset splits.
+        
+        Returns sorted (alphabetical) list for canonical ordering.
+        Assets not seen during dev training will have zero features,
+        which is equivalent to padding - no information leakage.
+        
+        Returns
+        -------
+        canonical_assets : List[str]
+            Alphabetically sorted list of all unique assets
+        """
+        import json
+        from pathlib import Path
+        
+        all_assets = set()
+        dataset_dir = Path(self.dataset_path)
+        
+        # Load from all asset list files (dev and test)
+        for asset_file in dataset_dir.glob("*_asset_lists.jsonl"):
+            with open(asset_file) as f:
+                for line in f:
+                    data = json.loads(line)
+                    all_assets.update(data['assets'])
+        
+        # Return alphabetically sorted for deterministic canonical ordering
+        return sorted(all_assets)
     
     def to(self, device: str) -> 'StateEncoder':
         """
@@ -202,12 +233,26 @@ class StateEncoder:
     
     def encode(self, obs: Dict[str, Any]) -> npt.NDArray[np.float32]:
         """
-        Encode single observation to fixed-size state.
+        Encode single observation with canonical padding.
+        
+        Process:
+        1. Create zero-padded arrays of size [n_canonical, 4, 60] and [n_canonical]
+        2. Fill in positions for assets present in this observation
+        3. Flatten and concatenate: [n_canonical × 240] + [n_canonical]
+        4. Project to target dimension
+        
+        Assets appear at consistent positions across all observations:
+        - bitcoin always at position X
+        - ethereum always at position Y
+        - etc. (alphabetical ordering)
         
         Parameters
         ----------
         obs : dict
-            Observation with keys 'features' [A_t, 4, 60] and 'prev_weights' [A_t]
+            Observation with keys:
+            - 'features': [A_t, 4, 60] OHLCV tensor
+            - 'prev_weights': [A_t] portfolio weights
+            - 'asset_ids': List[str] asset identifiers
         
         Returns
         -------
@@ -216,46 +261,38 @@ class StateEncoder:
         """
         features = obs['features']  # [A_t, 4, 60]
         prev_weights = obs['prev_weights']  # [A_t]
+        asset_ids = obs['asset_ids']  # List[str], length A_t
         
-        A_t = features.shape[0]
+        # Initialize padded arrays (zeros for absent assets)
+        features_padded = np.zeros((self.n_canonical, 4, 60), dtype=np.float32)
+        weights_padded = np.zeros(self.n_canonical, dtype=np.float32)
         
-        # Flatten temporal dimension per asset
-        features_flat = features.reshape(A_t, -1)  # [A_t, 240]
+        # Fill canonical positions for assets present today
+        for i, asset_id in enumerate(asset_ids):
+            if asset_id in self._asset_to_idx:
+                canonical_idx = self._asset_to_idx[asset_id]
+                features_padded[canonical_idx] = features[i]
+                weights_padded[canonical_idx] = prev_weights[i]
+            # Note: If asset_id not in canonical list, skip (shouldn't happen)
         
-        # Concatenate with prev_weights
-        asset_features = np.concatenate([
-            features_flat,
-            prev_weights[:, np.newaxis]
-        ], axis=1)  # [A_t, 241]
+        # Flatten features: [n_canonical, 4, 60] → [n_canonical × 240]
+        features_flat = features_padded.reshape(-1)
         
-        # Pooling across assets
-        pooled = np.mean(asset_features, axis=0)  # [241]
+        # Concatenate: [n_canonical × 240] + [n_canonical] → [raw_dim]
+        state_raw = np.concatenate([features_flat, weights_padded])
         
-        if self.include_stats:
-            # Add statistical features
-            min_features = np.min(asset_features, axis=0)  # [241]
-            max_features = np.max(asset_features, axis=0)  # [241]
-            std_features = np.std(asset_features, axis=0)  # [241]
-            
-            state_raw = np.concatenate([
-                pooled, min_features, max_features, std_features
-            ])  # [964]
-        else:
-            state_raw = pooled  # [241]
-        
-        # Project to target dimension if needed
-        if self.projection is not None:
-            state_tensor = torch.from_numpy(state_raw).float().unsqueeze(0).to(self.device)  # [1, raw_dim]
-            with torch.no_grad():
-                state = self.projection(state_tensor).squeeze(0).cpu().numpy()  # [state_dim]
-        else:
-            state = state_raw
+        # Project to target dimension
+        state_tensor = torch.from_numpy(state_raw).float().unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            state = self.projection(state_tensor).squeeze(0).cpu().numpy()
         
         return state.astype(np.float32)
     
     def encode_batch(self, obs_batch: List[Dict[str, Any]]) -> npt.NDArray[np.float32]:
         """
         Encode batch of observations.
+        
+        With canonical padding, all states have same shape - straightforward stacking.
         
         Parameters
         ----------

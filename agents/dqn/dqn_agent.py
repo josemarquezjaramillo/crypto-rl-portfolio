@@ -120,6 +120,9 @@ class DQNConfig(AgentConfig):
     hidden_dims: List[int] = field(default_factory=lambda: [512, 256])
     dropout: float = 0.1
     
+    # Dataset path for StateEncoder canonical asset loading
+    dataset_path: str = "dataset_v1"
+    
     # Device
     device: str = "cuda"  # Change to "cuda" if GPU available
 
@@ -172,8 +175,11 @@ class DQNAgent(BaseAgent):
             random_seed=config.random_seed
         )
         
-        # State encoder (move to device to ensure projection layer is on correct device)
-        self.state_encoder = StateEncoder(state_dim=config.state_dim).to(config.device)
+        # State encoder with canonical padding (move to device to ensure projection layer is on correct device)
+        self.state_encoder = StateEncoder(
+            state_dim=config.state_dim,
+            dataset_path=config.dataset_path
+        ).to(config.device)
         
         # Q-networks
         self.q_network = QNetwork(

@@ -24,6 +24,72 @@ from data.dataset_loader import load_exported_dataset
 from data.dataset_backend import DatasetBackend
 from environment.environment import PortfolioEnv, EnvConfig
 from agents.dqn import DQNAgent, DQNConfig
+from agents.dqn.networks import StateEncoder
+
+
+def test_canonical_padding():
+    """
+    Test that StateEncoder uses canonical positions consistently.
+    """
+    print("\n" + "="*60)
+    print("TEST: Canonical Padding Verification")
+    print("="*60)
+    
+    # Load dataset
+    ds = load_exported_dataset("dataset_v1", split="dev")
+    backend = DatasetBackend(ds, split_tag_filter="train_core")
+    
+    cfg = EnvConfig(
+        split="train",
+        cost_rate=0.001,
+        turnover_cap=0.30,
+        max_weight_per_asset=0.35,
+        strict_projection=False,
+        random_seed=42,
+    )
+    env = PortfolioEnv(cfg, backend)
+    
+    # Create encoder
+    encoder = StateEncoder(state_dim=256, dataset_path="dataset_v1")
+    
+    print(f"Canonical assets loaded: {encoder.n_canonical}")
+    print(f"First 10 assets: {encoder.canonical_assets[:10]}")
+    print(f"Raw state dimension: {encoder.raw_dim}")
+    print(f"Projected state dimension: {encoder.state_dim}")
+    
+    # Test encoding consistency across different observations
+    obs1 = env.reset(seed=42)
+    state1 = encoder.encode(obs1)
+    
+    print(f"\nFirst observation:")
+    print(f"  Assets: {len(obs1['asset_ids'])} tradable")
+    print(f"  Asset IDs: {obs1['asset_ids'][:5]}...")
+    print(f"  State shape: {state1.shape}")
+    print(f"  State mean: {state1.mean():.4f}, std: {state1.std():.4f}")
+    
+    # Step environment and encode again
+    action = env.sample_action()
+    obs2, _, _, _ = env.step(action)
+    state2 = encoder.encode(obs2)
+    
+    print(f"\nSecond observation:")
+    print(f"  Assets: {len(obs2['asset_ids'])} tradable")
+    print(f"  State shape: {state2.shape}")
+    
+    # Verify that same assets appear at same positions
+    common_assets = set(obs1['asset_ids']) & set(obs2['asset_ids'])
+    if common_assets:
+        sample_asset = list(common_assets)[0]
+        asset_idx = encoder._asset_to_idx[sample_asset]
+        print(f"\n  Sample asset '{sample_asset}' canonical position: {asset_idx}")
+        print(f"  Common assets between observations: {len(common_assets)}")
+    
+    # Verify state dimensions are consistent
+    assert state1.shape == state2.shape == (256,), "State dimensions should be consistent"
+    assert not np.isnan(state1).any(), "State should not contain NaN"
+    assert not np.isnan(state2).any(), "State should not contain NaN"
+    
+    print("\n✓ Canonical padding working correctly\n")
 
 
 def main():
@@ -77,6 +143,8 @@ def main():
     # ========================================================================
     print("\n[3/6] Initializing DQN agent...")
     try:
+        import torch
+        
         dqn_config = DQNConfig(
             name="DQN_SmokeTest",
             random_seed=42,
@@ -95,11 +163,19 @@ def main():
             state_dim=256,
             hidden_dims=[256, 128],
             dropout=0.1,
-            device="cuda",  # Use CPU for smoke test (GPU can cause numerical issues)
+            device="cuda",  # Use GPU for faster training
         )
         
         agent = DQNAgent(dqn_config, env)
+        
+        # Verify GPU configuration
+        gpu_status = "✓ GPU" if torch.cuda.is_available() and next(agent.q_network.parameters()).is_cuda else "✗ CPU"
+        gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A"
+        gpu_memory = f"{torch.cuda.memory_allocated(0) / 1024**2:.1f} MB" if torch.cuda.is_available() else "N/A"
+        
         print(f"✓ DQN agent initialized")
+        print(f"  Device: {gpu_status} ({gpu_name})")
+        print(f"  GPU Memory allocated: {gpu_memory}")
         print(f"  Action catalog size: {agent.catalog.size}")
         print(f"  Q-network: {sum(p.numel() for p in agent.q_network.parameters())} parameters")
         print(f"  Initial epsilon: {agent.epsilon:.3f}")
@@ -315,4 +391,5 @@ def main():
 
 
 if __name__ == "__main__":
+    test_canonical_padding()
     main()

@@ -3,7 +3,7 @@ Daily-rebalancing portfolio environment for cryptocurrency RL.
 
 This module implements a Markov Decision Process (MDP) for portfolio management
 with daily rebalancing, transaction costs, and realistic trading constraints as
-specified in DATA_METHODS.md.
+specified in documentation/PROJECT_SPECIFICATION.md Sections 1-3.
 
 The environment enforces:
 - Long-only, fully invested portfolios (no cash position)
@@ -90,12 +90,12 @@ Usage Example (With CSV Logging)
 
 References
 ----------
-See data/DATA_METHODS.md for detailed specifications on:
-- Market data and investable universe
-- State representation and normalization
-- Action space and constraints
-- Reward computation
-- Dataset export format
+See documentation/PROJECT_SPECIFICATION.md for detailed specifications on:
+- Market data and investable universe (Section 1)
+- State representation and normalization (Section 2)
+- Action space and constraints (Section 3)
+- Reward computation (Section 3.3)
+- Dataset export format (Section 5)
 
 Citations
 ---------
@@ -128,7 +128,7 @@ class Obs(TypedDict, total=False):
     features : np.ndarray
         Shape [A_t, 4, 60], dtype float32.
         Per-asset OHLCV lookback tensor. Channels: [Close, High, Low, Volume].
-        Normalized per DATA_METHODS.md specification.
+        Normalized per PROJECT_SPECIFICATION.md Section 2.2 specification.
     prev_weights : np.ndarray
         Shape [A_t], dtype float32.
         Portfolio weights realized at t-1 (before current decision).
@@ -187,7 +187,7 @@ class EnvConfig:
         dataset export configuration.
     rebalance_interval_days : int, default=1
         Portfolio rebalancing frequency in days. Currently only daily (1) is
-        supported per DATA_METHODS.md.
+        supported per PROJECT_SPECIFICATION.md Section 3.
     cost_rate : float, default=0.001
         Proportional transaction cost rate (e.g., 0.001 = 10 basis points).
         Applied to L1 turnover: cost = cost_rate * ||w_t - w_{t-1}||_1.
