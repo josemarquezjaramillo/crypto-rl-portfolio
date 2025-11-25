@@ -85,6 +85,8 @@ class DQNConfig(AgentConfig):
         Number of episodes to decay epsilon from start to end
     target_update_freq : int
         Update target network every N steps
+    use_double_dqn : bool
+        Use Double DQN (action selection with online network, evaluation with target)
     learning_rate : float
         Learning rate for Q-network optimizer
     state_dim : int
@@ -115,6 +117,9 @@ class DQNConfig(AgentConfig):
     # Target network
     target_update_freq: int = 1000
     
+    # Double DQN
+    use_double_dqn: bool = False
+    
     # Network architecture
     state_dim: int = 256
     hidden_dims: List[int] = field(default_factory=lambda: [512, 256])
@@ -131,6 +136,7 @@ class DQNAgent(BaseAgent):
     """
     Deep Q-Network agent for portfolio management.
     
+    Supports both standard DQN and Double DQN (DDQN) for reduced Q-value overestimation.
     Learns to select portfolio rebalancing actions from a discrete catalog of
     delta-based adjustments by estimating Q-values (expected returns) for each
     action given the current market state and previous portfolio allocation.
@@ -314,10 +320,20 @@ class DQNAgent(BaseAgent):
         current_q_values = self.q_network(states_tensor)  # [batch_size, n_actions]
         current_q = current_q_values.gather(1, actions_tensor.unsqueeze(1)).squeeze(1)  # [batch_size]
         
-        # Compute target Q-values: r + γ * max_a' Q_target(s', a')
+        # Compute target Q-values
         with torch.no_grad():
-            next_q_values = self.target_network(next_states_tensor)  # [batch_size, n_actions]
-            next_q = next_q_values.max(1)[0]  # [batch_size]
+            if self.config.use_double_dqn:
+                # Double DQN: use online network to SELECT action, target network to EVALUATE
+                # Reduces overestimation bias [van Hasselt et al. 2015]
+                next_q_values_online = self.q_network(next_states_tensor)  # [batch_size, n_actions]
+                best_actions = next_q_values_online.argmax(1)  # [batch_size]
+                next_q_values_target = self.target_network(next_states_tensor)  # [batch_size, n_actions]
+                next_q = next_q_values_target.gather(1, best_actions.unsqueeze(1)).squeeze(1)  # [batch_size]
+            else:
+                # Standard DQN: use target network for both selection and evaluation
+                next_q_values = self.target_network(next_states_tensor)  # [batch_size, n_actions]
+                next_q = next_q_values.max(1)[0]  # [batch_size]
+            
             target_q = rewards_tensor + (1.0 - dones_tensor) * self.config.gamma * next_q
         
         # Compute TD loss
@@ -357,6 +373,101 @@ class DQNAgent(BaseAgent):
                 self.config.epsilon_end,
                 self.epsilon - self.epsilon_decay_per_episode
             )
+    
+    def get_training_metrics(self) -> Dict[str, float]:
+        """
+        Get current training metrics for monitoring/pruning.
+        
+        Returns
+        -------
+        metrics : dict
+            Current training state including:
+            - mean_q_value: Average Q-value from last action selection
+            - max_q_value: Maximum Q-value from last action selection
+            - min_q_value: Minimum Q-value from last action selection
+            - std_q_value: Standard deviation of Q-values
+            - epsilon: Current exploration rate
+            - buffer_size: Current replay buffer size
+        """
+        if self.last_q_values is not None:
+            return {
+                'mean_q_value': float(self.last_q_values.mean()),
+                'max_q_value': float(self.last_q_values.max()),
+                'min_q_value': float(self.last_q_values.min()),
+                'std_q_value': float(self.last_q_values.std()),
+                'epsilon': self.epsilon,
+                'buffer_size': len(self.replay_buffer),
+            }
+        else:
+            return {
+                'mean_q_value': 0.0,
+                'max_q_value': 0.0,
+                'min_q_value': 0.0,
+                'std_q_value': 0.0,
+                'epsilon': self.epsilon,
+                'buffer_size': len(self.replay_buffer),
+            }
+    
+    def evaluate_on_env(
+        self, 
+        eval_env: PortfolioEnv, 
+        n_episodes: int = 5,
+        deterministic: bool = True,
+        max_steps: int = 10000
+    ) -> Dict[str, float]:
+        """
+        Evaluate agent on a separate environment (e.g., validation set).
+        
+        Parameters
+        ----------
+        eval_env : PortfolioEnv
+            Environment to evaluate on (should be different from training env)
+        n_episodes : int
+            Number of evaluation episodes to run
+        deterministic : bool
+            If True, use greedy policy (no exploration)
+        max_steps : int
+            Maximum steps per episode (emergency timeout to prevent infinite loops)
+        
+        Returns
+        -------
+        metrics : dict
+            Evaluation metrics including:
+            - sharpe_ratio: Mean Sharpe ratio across episodes
+            - mean_reward: Average episode reward
+            - mean_return: Average portfolio return
+            - std_reward: Standard deviation of episode rewards
+        """
+        episode_rewards = []
+        episode_sharpe_ratios = []
+        
+        for ep in range(n_episodes):
+            obs = eval_env.reset()
+            episode_reward = 0.0
+            step_rewards = []
+            done = False
+            step_count = 0
+            
+            while not done and step_count < max_steps:
+                action = self.select_action(obs, deterministic=deterministic)
+                obs, reward, done, info = eval_env.step(action)
+                episode_reward += reward
+                step_count += 1
+            
+            # Emergency timeout reached
+            if step_count >= max_steps:
+                print(f"⚠️  Warning: Evaluation episode {ep+1} hit max_steps={max_steps}")
+                done = True  # Force termination
+            
+            episode_rewards.append(episode_reward)
+        
+        # Return mean portfolio return as primary metric
+        return {
+            'mean_return': float(np.mean(episode_rewards)),
+            'std_return': float(np.std(episode_rewards)),
+            'min_return': float(np.min(episode_rewards)),
+            'max_return': float(np.max(episode_rewards)),
+        }
     
     def save(self, path: Path) -> None:
         """

@@ -123,9 +123,12 @@
 
 ### Jose's Tasks (10-12h)
 - [ ] Tune DQN hyperparameters (4-6h)
-  - Learning rate, batch size, replay buffer size
-  - ε decay schedule
-  - Target network update frequency
+  - **Gamma (discount factor):** {0.5, 0.7, 0.9, 0.99}
+  - Learning rate: {1e-4, 5e-5, 1e-5}
+  - Batch size: {32, 64, 128}
+  - Replay buffer size: {10K, 50K}
+  - ε decay schedule: {500, 1000, 2000} episodes
+  - Target network update frequency: {50, 100, 200} steps
 - [ ] Run DQN training on full train set (2-3h)
 - [ ] Validate DQN on validation set (2-3h)
 - [ ] Start building `evaluator.py` (2-3h)
