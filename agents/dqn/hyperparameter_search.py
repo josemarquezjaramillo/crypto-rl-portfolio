@@ -138,9 +138,9 @@ def create_environments(trial_number: int):
     """
     Create training and validation environments.
     
-    For hyperparameter tuning, we train and validate on the same validation 
-    windows (100 days total) to make the search fast. The best hyperparameters
-    will then be used for full production training on train_core.
+    For hyperparameter tuning, we use 100-day sliding windows sampled from
+    train_core (1,848 days). This matches the production training setup.
+    Validation uses the 5 regime-based validation windows.
     
     Parameters
     ----------
@@ -149,14 +149,16 @@ def create_environments(trial_number: int):
     
     Returns
     -------
-    train_env, val_env : tuple
-        Training and validation environments (both use validation windows)
+    ds, train_backend, val_env : tuple
+        Dataset, training backend (for window sampling), validation env
     """
     # Load dataset (dev split contains train_core + validation windows)
     ds = load_exported_dataset("dataset_v1", split="dev")
     
-    # For hyperparameter search: train on validation windows (100 days total)
-    # This is 18× faster than using train_core (1,848 days)
+    # Training: Use train_core backend (will sample 100-day windows from it)
+    train_backend = DatasetBackend(ds, split_tag_filter="train_core")
+    
+    # Validation: Use the 5 regime-based validation windows (100 days total)
     val_windows = [
         "val_window_val_2018_crash",
         "val_window_val_covid",
@@ -164,18 +166,6 @@ def create_environments(trial_number: int):
         "val_window_val_bear",
         "val_window_val_chop"
     ]
-    
-    train_backend = DatasetBackend(ds, split_tag_filter=val_windows)
-    train_env = PortfolioEnv(
-        EnvConfig(
-            split="train",
-            random_seed=42 + trial_number,  # Vary seed per trial
-            **ENV_CONFIG
-        ),
-        train_backend
-    )
-    
-    # Validation uses same windows but with fixed seed for consistency
     val_backend = DatasetBackend(ds, split_tag_filter=val_windows)
     val_env = PortfolioEnv(
         EnvConfig(
@@ -186,7 +176,7 @@ def create_environments(trial_number: int):
         val_backend
     )
     
-    return train_env, val_env
+    return ds, train_backend, val_env
 
 
 # ============================================================================
@@ -239,7 +229,13 @@ def objective(trial: optuna.Trial) -> float:
     print(f"  hidden_dims:           {hidden_dims}")
     
     # Create environments
-    train_env, val_env = create_environments(trial.number)
+    ds, train_backend, val_env = create_environments(trial.number)
+    
+    # Calculate window sampling parameters (exactly like train_dqn.py)
+    all_train_dates = train_backend.dates()  # np.datetime64 array
+    window_length = 100
+    max_start_day = len(all_train_dates) - window_length
+    print(f"  Training windows:      {max_start_day + 1} possible 100-day windows from {len(all_train_dates)} days")
     
     # Create agent configuration
     # Set min_buffer_size to max(batch_size, 100) to avoid sampling errors
@@ -265,13 +261,45 @@ def objective(trial: optuna.Trial) -> float:
         dropout=0.0,
     )
     
-    # Create agent
-    agent = DQNAgent(agent_config, train_env)
+    # Create agent with a dummy env (will train on windows)
+    dummy_env = PortfolioEnv(
+        EnvConfig(split="train", random_seed=42 + trial.number, **ENV_CONFIG),
+        train_backend
+    )
+    agent = DQNAgent(agent_config, dummy_env)
     
-    # Training loop
+    # Training loop with sliding windows (exactly like train_dqn.py)
     n_episodes = TRAINING_CONFIG['n_training_episodes']
     for episode in range(n_episodes):
-        # Train one episode
+        # Sample a random 100-day window from train_core
+        start_idx = np.random.randint(0, max_start_day + 1)
+        end_idx = start_idx + window_length - 1
+        
+        window_start = str(all_train_dates[start_idx])
+        window_end = str(all_train_dates[end_idx])
+        
+        # Create windowed backend using date range filtering
+        window_backend = DatasetBackend(
+            ds,
+            split_tag_filter="train_core",
+            start_date=window_start,
+            end_date=window_end
+        )
+        
+        # Create environment for this window
+        window_env = PortfolioEnv(
+            EnvConfig(
+                split="train",
+                random_seed=None,  # Different seed per episode for diversity
+                **ENV_CONFIG
+            ),
+            window_backend
+        )
+        
+        # Set agent's environment to this window
+        agent.env = window_env
+        
+        # Train one episode on this window
         episode_metrics = agent.train_episode()
         
         # Get metrics
@@ -306,7 +334,7 @@ def objective(trial: optuna.Trial) -> float:
             val_env, 
             n_episodes=TRAINING_CONFIG['n_val_episodes'],
             deterministic=True,
-            max_steps=5000  # Emergency timeout per validation episode
+            max_steps=10000  # Emergency timeout (should complete in ~100 steps with constraint fix)
         )
         
         val_return = val_metrics['mean_return']

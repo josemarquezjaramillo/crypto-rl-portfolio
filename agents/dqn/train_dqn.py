@@ -65,7 +65,7 @@ ENV_CONFIG = {
     'cost_rate': 0.001,
     'turnover_cap': 0.30,
     'max_weight_per_asset': 0.35,
-    'strict_projection': False,
+    'strict_projection': False,  # Penalty-based learning (agent learns constraints)
     'constraint_penalty': -10.0,
     'terminate_on_violation': False,
 }
@@ -76,12 +76,17 @@ ENV_CONFIG = {
 # ============================================================================
 
 def get_optuna_storage_url() -> str:
-    """Build Optuna storage URL using existing DatabaseConfig."""
+    """
+    Build Optuna storage URL using existing DatabaseConfig.
+    Points to 'optuna' schema in PostgreSQL.
+    """
     try:
         db_config = DatabaseConfig()
+        # Use search_path option to set default schema to 'optuna'
         return (
             f"postgresql://{db_config.user}:{db_config.password}"
             f"@{db_config.host}:{db_config.port}/{db_config.database}"
+            f"?options=-csearch_path%3Doptuna"
         )
     except Exception as e:
         print(f"⚠️  Could not connect to PostgreSQL: {e}")
@@ -101,8 +106,8 @@ def create_environments():
     
     Returns
     -------
-    train_backend, val_env : tuple
-        Training backend (for windowing) and validation environment
+    ds, train_backend, val_env : tuple
+        Dataset (for window creation), training backend, and validation environment
     """
     # Load dataset (dev split contains train_core + validation windows)
     ds = load_exported_dataset("dataset_v1", split="dev")
@@ -131,7 +136,7 @@ def create_environments():
         val_backend
     )
     
-    return train_backend, val_env
+    return ds, train_backend, val_env
 
 
 # ============================================================================
@@ -194,6 +199,7 @@ def parse_hidden_dims(hidden_dims_str: str) -> list:
 
 def train_with_early_stopping(
     agent: DQNAgent,
+    ds,  # ExportedDataset for creating windowed backends
     train_backend: DatasetBackend,
     val_env: PortfolioEnv,
     window_length: int = 100,
@@ -210,6 +216,8 @@ def train_with_early_stopping(
     ----------
     agent : DQNAgent
         Agent to train
+    ds : ExportedDataset
+        Dataset for creating windowed backends
     train_backend : DatasetBackend
         Training dataset backend for window sampling
     val_env : PortfolioEnv
@@ -253,7 +261,8 @@ def train_with_early_stopping(
             f.write('val_return,val_std,is_best\n')
     
     # Calculate window sampling parameters
-    total_days = len(train_backend.df_index)
+    all_train_dates = train_backend.dates()  # np.datetime64 array
+    total_days = len(all_train_dates)
     max_start_day = total_days - window_length
     
     if max_start_day < 0:
@@ -275,25 +284,28 @@ def train_with_early_stopping(
     print(f"Checkpoint Dir:    {checkpoint_dir}")
     print("="*70 + "\n")
     
-    # Training loop with random window sampling
+    # Training loop with sliding windows
     for episode in range(start_episode, TRAINING_CONFIG['max_episodes']):
-        # Sample random window from train_core
-        start_day = np.random.randint(0, max_start_day + 1)
-        end_day = start_day + window_length
+        # Sample a random 100-day window from train_core
+        start_idx = np.random.randint(0, max_start_day + 1)
+        end_idx = start_idx + window_length - 1  # inclusive
         
-        # Create windowed backend for this episode
+        window_start = str(all_train_dates[start_idx])
+        window_end = str(all_train_dates[end_idx])
+        
+        # Create windowed backend using date range filtering
         window_backend = DatasetBackend(
-            train_backend.dataset,
-            split_tag_filter=train_backend.split_tag_filter
+            ds,
+            split_tag_filter="train_core",
+            start_date=window_start,
+            end_date=window_end
         )
-        # Slice to window
-        window_backend.df_index = train_backend.df_index.iloc[start_day:end_day]
         
         # Create environment for this window
         window_env = PortfolioEnv(
             EnvConfig(
                 split="train",
-                random_seed=42 + episode,  # Vary seed per episode
+                random_seed=None,  # Different seed per episode for diversity
                 **ENV_CONFIG
             ),
             window_backend
@@ -312,8 +324,7 @@ def train_with_early_stopping(
         buffer_size = len(agent.replay_buffer)
         
         # Print progress
-        print(f"Episode {episode+1:4d}/{TRAINING_CONFIG['max_episodes']} "
-              f"[Days {start_day:4d}-{end_day:4d}]: "
+        print(f"Episode {episode+1:4d}/{TRAINING_CONFIG['max_episodes']}: "
               f"Return={train_return:7.4f}, "
               f"Q={mean_q:7.2f}, "
               f"ε={epsilon:.3f}, "
@@ -497,10 +508,10 @@ def main():
     
     # Create environments
     print("Loading dataset and creating environments...")
-    train_backend, val_env = create_environments()
-    print(f"✓ Training dataset: {len(train_backend.df_index)} days (train_core)")
+    ds, train_backend, val_env = create_environments()
+    print(f"✓ Training dataset: {len(train_backend.dates())} days (train_core)")
     print(f"✓ Window length: {TRAINING_CONFIG['window_length']} days per episode")
-    print(f"✓ Validation environment: {len(val_env.backend.df_index)} days")
+    print(f"✓ Validation environment: {len(val_env.ds.dates())} days")
     
     # Parse hidden dimensions
     hidden_dims = parse_hidden_dims(params['hidden_dims'])
@@ -558,6 +569,7 @@ def main():
     # Train with early stopping using windowed sampling
     summary = train_with_early_stopping(
         agent,
+        ds,
         train_backend,
         val_env,
         window_length=TRAINING_CONFIG['window_length'],

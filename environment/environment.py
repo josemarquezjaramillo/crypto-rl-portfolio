@@ -626,16 +626,22 @@ class PortfolioEnv:
         if not self.cfg.strict_projection:
             # Penalty-based constraint enforcement (recommended for RL)
             if not self._is_feasible(w_prop):
-                # Constraint violation: penalize and reject action
+                # Constraint violation: penalize but still advance time
                 violation_type = self._get_violation_type(w_prop)
                 reward = float(self.cfg.constraint_penalty)
-                done = bool(self.cfg.terminate_on_violation)
+                
+                # CRITICAL FIX: Advance time even on violation (keep portfolio at prev_w)
+                # This prevents infinite loops while still penalizing the agent
+                old_assets = self.asset_ids_t
+                self._advance_one_day()
+                self.prev_w = self.align_weights(self.prev_w, old_assets, self.asset_ids_t)
+                self._step_counter += 1
                 
                 info: StepInfo = StepInfo(
-                    date=self.date_t,
+                    date=self.date_t,  # Now at t+1
                     tradable_assets=list(self.asset_ids_t),
                     proposed_weights=w_prop if self.cfg.action_mode == "continuous" else None,
-                    executed_weights=self.prev_w.copy(),  # Portfolio remains at prev_w
+                    executed_weights=self.prev_w.copy(),  # Portfolio kept at prev_w
                     discrete_action_idx=discrete_idx,
                     gross_log_return=0.0,  # No execution
                     turnover=0.0,  # No rebalancing
@@ -652,9 +658,13 @@ class PortfolioEnv:
                 if self.cfg.log_dir is not None:
                     self._log_step(info, action)
                 
-                # Return current state (no progression to next day on violation)
-                obs_current = self.get_state()
-                return obs_current, reward, done, info
+                # Check if episode is done after advancing
+                done = self.get_terminal_flag()
+                if self.cfg.terminate_on_violation:
+                    done = True
+                    
+                obs_next = self.get_state() if not done else self._terminal_state_like()
+                return obs_next, reward, done, info
             
             # Feasible action: execute normally
             w_exec = w_prop

@@ -413,7 +413,7 @@ class DQNAgent(BaseAgent):
         eval_env: PortfolioEnv, 
         n_episodes: int = 5,
         deterministic: bool = True,
-        max_steps: int = 10000
+        max_steps: int = 200  # Reduced from 10000 for debugging
     ) -> Dict[str, float]:
         """
         Evaluate agent on a separate environment (e.g., validation set).
@@ -495,7 +495,8 @@ class DQNAgent(BaseAgent):
         
         # Save metrics history
         if self.metrics_tracker.episodes:
-            self.metrics_tracker.to_csv(path / 'training_history.csv')
+            df = self.metrics_tracker.to_dataframe()
+            df.to_csv(path / 'training_history.csv', index=False)
     
     def load(self, path: Path) -> None:
         """

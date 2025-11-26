@@ -216,7 +216,8 @@ The environment supports two constraint handling approaches, configured via `Env
 
 2. **Penalty Mode** (`strict_projection=False`, for DQN with delta actions):
    - If the proposed allocation violates constraints, the environment rejects it and penalizes the agent with `constraint_penalty` reward (default -10.0).
-   - The portfolio remains at its previous state (no execution), and the episode continues (unless `terminate_on_violation=True`).
+   - **Critical Design**: The portfolio remains at its previous state (no execution), BUT the environment advances to the next day regardless. This ensures episodes progress normally even when constraints are violated frequently during early training.
+   - **Bug Fix (Nov 2024)**: Earlier implementation returned the same state without advancing time, causing infinite loops when agents proposed constraint-violating actions repeatedly. The fix ensures time progression while still penalizing the agent, allowing recovery from mistakes.
    - Constraint violations are recorded in `StepInfo` with `constraint_violation=True` and `violation_type` field ('non_negative', 'simplex', 'concentration').
    - This mode enables the agent to learn which actions are feasible in which states through experience, following Lucarelli & Borrotti (2020)'s delta-based action catalog design [lucarelli2020dqlcrypto].
    - Expected violation rate: ~15-20% initially, decreasing to <1% as the agent learns context-dependent feasibility.
@@ -507,15 +508,16 @@ The DQN hyperparameter optimization uses **Optuna 4.0+** with Bayesian optimizat
 - **Study**: `dqn_portfolio_optimization` stored in PostgreSQL (persistent across sessions)
 - **Sampler**: TPE (Tree-structured Parzen Estimator) for Bayesian hyperparameter selection
 - **Pruner**: MedianPruner with n_startup_trials=5, n_warmup_steps=50 (automatically terminates underperforming trials)
-- **Parallel Execution**: 15 workers (`--n-jobs 15`) leveraging NVIDIA RTX 3070 Laptop GPU (8.59 GB VRAM, ~21% utilization with 15 parallel agents)
-- **Trial Budget**: 50 trials, effective search time ~10-14 hours with automatic pruning
+- **Parallel Execution**: 5 workers (`--n-jobs 5`) for better Bayesian optimization (10 batches × 5 workers = better learning between batches)
+- **Trial Budget**: 50 trials, effective search time ~5-6 hours
 
-**Training Protocol per Trial (Validation-Only Strategy):**
-- **Training Episodes**: 50 episodes using ONLY the 5 validation windows (100 days total: val_2018_crash, val_covid, val_bull, val_bear, val_chop)
-  - **Rationale**: Training on validation windows during hyperparameter search prevents overfitting to specific train_core regimes while ensuring hyperparameters generalize across diverse market conditions (crash, bull, bear, chop)
-  - **Episode length**: ~100 days per episode (cycling through validation windows)
-  - **Speed**: ~3-4 minutes per 100-day episode (vs ~60 minutes for full 1,848-day train_core episode)
-- **Validation Episodes**: 5 episodes across the same 5 regime windows with fixed seed (999) for consistency
+**Training Protocol per Trial (Sliding Window Strategy):**
+- **Training Episodes**: 50 episodes using 100-day sliding windows randomly sampled from train_core (1,848 days)
+  - **Rationale**: Matches production training methodology (100-day windows) while providing diverse market conditions from train_core
+  - **Possible Windows**: 1,749 starting positions (days 0-1748 of train_core)
+  - **Episode length**: 100 days per episode (~3-4 minutes per episode)
+  - **Change from Original Plan**: Initially planned to train on validation windows only, but changed to match production training setup with train_core sliding windows for consistency
+- **Validation Episodes**: 5 episodes across the 5 regime-based validation windows (val_2018_crash, val_covid, val_bull, val_bear, val_chop) with fixed seed (999) for consistency
 - **Optimization Metric**: Mean validation return (stable with few episodes, defers Sharpe/Sortino to final evaluation)
 - **Automatic Pruning Criteria**:
   - Q-value explosion: mean_q > 10,000 (indicates unstable value estimates)

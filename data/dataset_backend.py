@@ -22,18 +22,27 @@ Example Usage
 >>>
 >>> # Create backend for training (only train_core days)
 >>> train_backend = DatasetBackend(ds, split_tag_filter="train_core")
->>> print(f"Training days: {len(train_backend.dates())}")  # 922 days
+>>> print(f"Training days: {len(train_backend.dates())}")  # 1848 days
 >>>
 >>> # Create backend for a specific validation window
 >>> val_backend = DatasetBackend(ds, split_tag_filter="val_window_val_bear")
->>> print(f"Validation days: {len(val_backend.dates())}")  # 19 days
+>>> print(f"Validation days: {len(val_backend.dates())}")  # ~20 days
 >>>
 >>> # Create backend for multiple validation windows
 >>> val_multi = DatasetBackend(
 ...     ds,
 ...     split_tag_filter=["val_window_val_bear", "val_window_val_chop"]
 ... )
->>> print(f"Combined val days: {len(val_multi.dates())}")  # 38 days
+>>> print(f"Combined val days: {len(val_multi.dates())}")  # ~40 days
+>>>
+>>> # NEW: Create backend with date range filtering (sliding window)
+>>> window_backend = DatasetBackend(
+...     ds,
+...     split_tag_filter="train_core",
+...     start_date="2020-01-01",
+...     end_date="2020-04-09"  # 100-day window
+... )
+>>> print(f"Window days: {len(window_backend.dates())}")  # 100 days
 >>>
 >>> # Use with environment
 >>> cfg = EnvConfig(split="train", cost_rate=0.001, turnover_cap=0.30)
@@ -110,18 +119,59 @@ class DatasetBackend:
         self,
         exported_dataset: ExportedDataset,
         split_tag_filter: Optional[Union[str, List[str]]] = None,
+        start_date: Optional[Union[str, np.datetime64]] = None,
+        end_date: Optional[Union[str, np.datetime64]] = None,
     ):
         """
-        Initialize the backend adapter with optional split tag filtering.
+        Initialize the backend adapter with optional split tag and date range filtering.
         
         The constructor performs filtering, builds bidirectional date conversion
         mappings, and validates that the resulting dataset is non-empty.
+        
+        Filters are applied in order:
+        1. split_tag_filter (if specified)
+        2. date range filter (if start_date or end_date specified)
+        
+        Parameters
+        ----------
+        exported_dataset : ExportedDataset
+            A loaded dataset from load_exported_dataset()
+        split_tag_filter : str | List[str] | None, optional
+            Filter by split tags (e.g., "train_core", ["val_window_val_bear"])
+        start_date : str | np.datetime64 | None, optional
+            Include dates >= start_date (inclusive). Format: 'YYYY-MM-DD'
+        end_date : str | np.datetime64 | None, optional
+            Include dates <= end_date (inclusive). Format: 'YYYY-MM-DD'
+            
+        Examples
+        --------
+        # Filter by tag only
+        >>> backend = DatasetBackend(ds, split_tag_filter="train_core")
+        
+        # Filter by date range only
+        >>> backend = DatasetBackend(ds, start_date="2020-01-01", end_date="2020-12-31")
+        
+        # Combine tag and date range filtering
+        >>> backend = DatasetBackend(
+        ...     ds, 
+        ...     split_tag_filter="train_core",
+        ...     start_date="2020-01-01",
+        ...     end_date="2021-12-31"
+        ... )
         """
         self._ds = exported_dataset
         self._split_tag_filter = split_tag_filter
+        self._start_date = start_date
+        self._end_date = end_date
         
         # Filter dates by split_tag if requested
         self._valid_dates = self._apply_split_tag_filter()
+        
+        # Apply date range filter if requested
+        if start_date is not None or end_date is not None:
+            self._valid_dates = self._apply_date_range_filter(
+                self._valid_dates, start_date, end_date
+            )
         
         # Validate non-empty
         if len(self._valid_dates) == 0:
@@ -196,6 +246,69 @@ class DatasetBackend:
             f"split_tag_filter must be str, List[str], or None, "
             f"got {type(self._split_tag_filter)}"
         )
+    
+    def _apply_date_range_filter(
+        self,
+        date_strings: List[str],
+        start_date: Optional[Union[str, np.datetime64]],
+        end_date: Optional[Union[str, np.datetime64]]
+    ) -> List[str]:
+        """
+        Filter date strings to specified range [start_date, end_date] inclusive.
+        
+        This method is applied after split_tag filtering to further narrow the
+        date range. Useful for creating sliding windows, year-specific training,
+        or walk-forward validation scenarios.
+        
+        Parameters
+        ----------
+        date_strings : List[str]
+            Date strings in 'YYYY-MM-DD' format (chronologically sorted)
+        start_date : str | np.datetime64 | None
+            Include dates >= start_date (inclusive). None means no lower bound.
+        end_date : str | np.datetime64 | None
+            Include dates <= end_date (inclusive). None means no upper bound.
+            
+        Returns
+        -------
+        List[str]
+            Filtered date strings in chronological order
+            
+        Examples
+        --------
+        >>> dates = ['2020-01-01', '2020-06-01', '2021-01-01']
+        >>> backend._apply_date_range_filter(dates, '2020-06-01', None)
+        ['2020-06-01', '2021-01-01']
+        """
+        if start_date is None and end_date is None:
+            return date_strings
+        
+        if len(date_strings) == 0:
+            return date_strings
+        
+        # Convert to np.datetime64 for comparison
+        dates_dt64 = np.array([np.datetime64(d, 'D') for d in date_strings])
+        
+        mask = np.ones(len(dates_dt64), dtype=bool)
+        
+        if start_date is not None:
+            start_dt64 = (
+                np.datetime64(start_date, 'D') 
+                if isinstance(start_date, str) 
+                else start_date
+            )
+            mask &= (dates_dt64 >= start_dt64)
+        
+        if end_date is not None:
+            end_dt64 = (
+                np.datetime64(end_date, 'D') 
+                if isinstance(end_date, str) 
+                else end_date
+            )
+            mask &= (dates_dt64 <= end_dt64)
+        
+        filtered_indices = np.where(mask)[0]
+        return [date_strings[i] for i in filtered_indices]
     
     def dates(self) -> npt.NDArray[np.datetime64]:
         """
