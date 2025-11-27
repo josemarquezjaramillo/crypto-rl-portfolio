@@ -13,6 +13,21 @@ import json
 
 from pathlib import Path
 
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, Any, Optional, List
+import numpy as np
+import numpy.typing as npt
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+from agents.base_agent import BaseAgent, AgentConfig
+from agents.dqn.action_catalog_delta import DeltaActionCatalog
+from agents.dqn.replay_buffer import ReplayBuffer
+from agents.dqn.networks import QNetwork, StateEncoder, copy_network_weights
+from environment.environment import PortfolioEnv, Obs
+
 # from data.dataset_loader import load_exported_dataset
 # from data.dataset_backend import DatasetBackend
 # from environment.environment import PortfolioEnv, EnvConfig
@@ -223,23 +238,23 @@ class PolicyNet(nn.Module):
 
         return logits
 
-# @dataclass
-# class PolicyGradConfig(AgentConfig):
-#   # learning
-#   learning_rate=1e-4
-#   epsilon_start=1.0
-#   epsilon_end = 0.05
-#   epsilon_decay_episodes = 500
-#   # state encoding
-#   dataset_path="dataset_v1"
-#   max_alloc=0.35
-#   # pytorch
-#   device='cuda'
-#   recurrent_layer = nn.GRU
-#   #architecture
-#   layers=None
-#   hidden_dim = 64
-#   # canonical_assets: List[str] = field(default_factory=list)
+@dataclass
+class PolicyGradConfig(AgentConfig):
+  # learning
+  learning_rate=1e-4
+  epsilon_start=1.0
+  epsilon_end = 0.05
+  epsilon_decay_episodes = 500
+  # state encoding
+  dataset_path="dataset_v1"
+  max_alloc=0.35
+  # pytorch
+  device='cuda'
+  recurrent_layer = nn.GRU
+  #architecture
+  layers=None
+  hidden_dim = 64
+  # canonical_assets: List[str] = field(default_factory=list)
 
 class PolicyGradAgent(BaseAgent):
     def __init__(self, config, env):
