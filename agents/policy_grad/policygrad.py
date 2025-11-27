@@ -44,6 +44,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 import json
 
+from tqdm.auto import tqdm
+
 # Load environment variables
 load_dotenv()
 
