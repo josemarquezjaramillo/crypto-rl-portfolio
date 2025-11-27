@@ -223,23 +223,23 @@ class PolicyNet(nn.Module):
 
         return logits
 
-@dataclass
-class PolicyGradConfig(AgentConfig):
-  # learning
-  learning_rate=1e-4
-  epsilon_start=1.0
-  epsilon_end = 0.05
-  epsilon_decay_episodes = 500
-  # state encoding
-  dataset_path="dataset_v1"
-  max_alloc=0.35
-  # pytorch
-  device='cuda'
-  recurrent_layer = nn.GRU
-  #architecture
-  layers=None
-  hidden_dim = 64
-  # canonical_assets: List[str] = field(default_factory=list)
+# @dataclass
+# class PolicyGradConfig(AgentConfig):
+#   # learning
+#   learning_rate=1e-4
+#   epsilon_start=1.0
+#   epsilon_end = 0.05
+#   epsilon_decay_episodes = 500
+#   # state encoding
+#   dataset_path="dataset_v1"
+#   max_alloc=0.35
+#   # pytorch
+#   device='cuda'
+#   recurrent_layer = nn.GRU
+#   #architecture
+#   layers=None
+#   hidden_dim = 64
+#   # canonical_assets: List[str] = field(default_factory=list)
 
 class PolicyGradAgent(BaseAgent):
     def __init__(self, config, env):
