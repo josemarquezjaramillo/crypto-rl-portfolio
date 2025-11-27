@@ -457,7 +457,7 @@ class PolicyGradAgent(BaseAgent):
         episode_rewards = []
 
         with torch.no_grad():
-            for ep in tqdm(range(n_episodes)):
+            for ep in tqdm(range(n_episodes), leave=False):
                 obs = eval_env.reset()
                 episode_reward = 0.0
                 done = False
