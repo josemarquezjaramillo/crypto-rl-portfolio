@@ -214,51 +214,6 @@ class PolicyNet(nn.Module):
 
         return logits
 
-
-    def forward(self, features, prev_weights, no_prev: bool):
-        """
-        features:     [A_t, 60, 4]
-        prev_weights: [A_t]
-        no_prev:      bool (mask saying "these prev_weights are from reset")
-        """
-
-        A_t = features.size(0)
-        device = features.device
-
-        # ----------- 1) Encode sequences per asset -----------
-        enc, _ = self.encoder(features)     # [A_t, 60, hidden]
-        asset_emb = enc[:, -1]              # last hidden state → [A_t, hidden]
-
-        # ----------- 2) Attention pooling (global context) -----------
-        keys = torch.tanh(self.att_key(asset_emb))          # [A_t, hidden]
-        att_scores = self.att_query(keys).squeeze(-1)       # [A_t]
-        att_weights = torch.softmax(att_scores, dim=0)      # [A_t]
-        global_emb = torch.sum(att_weights[:, None] * asset_emb, dim=0)  # [hidden]
-
-        # Expand global embedding to [A_t, hidden]
-        global_rep = global_emb.unsqueeze(0).expand(A_t, -1)
-
-        # ----------- 3) Prev weights + no_prev mask -----------
-        # Keep the actual prev_weights (equal-weight on first step),
-        # but give the network an explicit flag so it can learn to ignore / gate them.
-        pw = prev_weights.to(device).unsqueeze(1)  # [A_t, 1]
-
-        no_prev_flag = torch.full(
-            (A_t, 1),
-            1.0 if no_prev else 0.0,
-            device=device,
-            dtype=pw.dtype,
-        )  # [A_t, 1], broadcast mask
-
-        # Concatenate all asset-wise features
-        x = torch.cat([asset_emb, global_rep, pw, no_prev_flag], dim=1)  # [A_t, hidden*2 + 2]
-
-        # ----------- 4) Produce per-asset unnormalized scores -----------
-        x = torch.relu(self.fc1(x))
-        logits = self.fc2(x).squeeze(-1)  # [A_t]
-
-        return logits
-
 @dataclass
 class PolicyGradConfig(AgentConfig):
   # learning
