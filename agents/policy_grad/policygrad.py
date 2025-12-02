@@ -23,9 +23,9 @@ import torch.nn as nn
 import torch.optim as optim
 
 from agents.base_agent import BaseAgent, AgentConfig
-from agents.dqn.action_catalog_delta import DeltaActionCatalog
-from agents.dqn.replay_buffer import ReplayBuffer
-from agents.dqn.networks import QNetwork, StateEncoder, copy_network_weights
+# from agents.dqn.action_catalog_delta import DeltaActionCatalog
+# from agents.dqn.replay_buffer import ReplayBuffer
+# from agents.dqn.networks import QNetwork, StateEncoder, copy_network_weights
 from environment.environment import PortfolioEnv, Obs
 
 # from data.dataset_loader import load_exported_dataset
@@ -43,6 +43,8 @@ import torch
 from datetime import datetime
 from dotenv import load_dotenv
 import json
+
+from tqdm.auto import tqdm
 
 # Load environment variables
 load_dotenv()
@@ -149,92 +151,66 @@ class AssetIndexer:
 
 class PolicyNet(nn.Module):
     """
-    Policy network for continuous portfolio weights.
+    Simplest functional policy network:
+      GRU → per-asset embedding → concat prev_w + no_prev → MLP → logits
 
-    Input:
-      features:     [A_t, 60, 4]   -- OHLCV sequence per asset
-      prev_weights: [A_t]          -- previous realized weights
-      no_prev:      bool           -- True on first step of episode
+    Input shapes:
+      features:     [A_t, 60, 4]
+      prev_weights: [A_t]
+      no_prev:      bool
 
     Output:
-      logits:       [A_t]          -- unnormalized per-asset scores
-
-    Uses:
-      1) GRU over 60-day sequence → per-asset embedding
-      2) Attention pooling → global portfolio context
-      3) Combine (asset_emb, global_emb, prev_weight, no_prev_flag)
-      4) Output a score per asset
-
-    NOTE:
-      Softmax is applied OUTSIDE this network.
+      logits:       [A_t]
     """
 
-    def __init__(
-        self,
-        feature_dim: int = 4,      # OHLCV channels
-        hidden_dim: int = 64
-    ):
+    def __init__(self, feature_dim=4, hidden_dim=64, seq_layer=nn.GRU):
         super().__init__()
 
         self.hidden_dim = hidden_dim
 
-        # 1) Sequence encoder per asset: GRU over 60 days
-        self.encoder = nn.GRU(
+        # GRU for each asset's sequence
+        self.encoder = seq_layer(
             input_size=feature_dim,
             hidden_size=hidden_dim,
             batch_first=True
         )
 
-        # 2) Attention pooling parameters
-        self.att_key = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        self.att_query = nn.Linear(hidden_dim, 1, bias=False)
+        # MLP after concatenating prev_w + no_prev flag
+        # asset_emb (hidden_dim) + prev_w(1) + no_prev(1) = hidden_dim + 2
+        self.fc1 = nn.Linear(hidden_dim + 2, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, 1)
 
-        # 3) Combine embeddings
-        # asset_emb (64), global_emb (64), prev_weight (1), no_prev_flag (1)
-        self.fc1 = nn.Linear(hidden_dim * 2 + 2, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, 1)   # output score for each asset
-
-    def forward(self, features, prev_weights, no_prev: bool):
+    def forward(self, features, prev_weights, no_prev):
         """
         features:     [A_t, 60, 4]
         prev_weights: [A_t]
-        no_prev:      bool (mask saying "these prev_weights are from reset")
+        no_prev:      bool
         """
 
-        A_t = features.size(0)
         device = features.device
+        A_t = features.size(0)
 
-        # ----------- 1) Encode sequences per asset -----------
-        enc, _ = self.encoder(features)     # [A_t, 60, hidden]
-        asset_emb = enc[:, -1]              # last hidden state → [A_t, hidden]
+        # ----------- 1. Encode sequences ----------- #
+        # GRU expects [batch=A_t, seq=60, feature=4]
+        enc, _ = self.encoder(features)        # [A_t, 60, hidden]
+        asset_emb = enc[:, -1]                 # last timestep: [A_t, hidden]
 
-        # ----------- 2) Attention pooling (global context) -----------
-        keys = torch.tanh(self.att_key(asset_emb))          # [A_t, hidden]
-        att_scores = self.att_query(keys).squeeze(-1)       # [A_t]
-        att_weights = torch.softmax(att_scores, dim=0)      # [A_t]
-        global_emb = torch.sum(att_weights[:, None] * asset_emb, dim=0)  # [hidden]
-
-        # Expand global embedding to [A_t, hidden]
-        global_rep = global_emb.unsqueeze(0).expand(A_t, -1)
-
-        # ----------- 3) Prev weights + no_prev mask -----------
-        # Keep the actual prev_weights (equal-weight on first step),
-        # but give the network an explicit flag so it can learn to ignore / gate them.
-        pw = prev_weights.to(device).unsqueeze(1)  # [A_t, 1]
+        # ----------- 2. Prepare prev weight inputs ----------- #
+        pw = prev_weights.to(device).unsqueeze(1)   # [A_t, 1]
 
         no_prev_flag = torch.full(
             (A_t, 1),
             1.0 if no_prev else 0.0,
             device=device,
-            dtype=pw.dtype,
-        )  # [A_t, 1], broadcast mask
+            dtype=pw.dtype
+        )                                            # [A_t, 1]
 
-        # Concatenate all asset-wise features
-        x = torch.cat([asset_emb, global_rep, pw, no_prev_flag], dim=1)  # [A_t, hidden*2 + 2]
+        # ----------- 3. Combine features ----------- #
+        x = torch.cat([asset_emb, pw, no_prev_flag], dim=1)  # [A_t, hidden+2]
 
-        # ----------- 4) Produce per-asset unnormalized scores -----------
-        x = torch.relu(self.fc1(x))
-        logits = self.fc2(x).squeeze(-1)  # [A_t]
+        # ----------- 4. Feedforward head ----------- #
+        x = torch.relu(self.fc1(x))                 # [A_t, hidden]
+        logits = self.fc2(x).squeeze(-1)            # [A_t]
 
         return logits
 
@@ -279,7 +255,8 @@ class PolicyGradAgent(BaseAgent):
         # Policy network → outputs logits for active assets
         self.nn = PolicyNet(
             feature_dim=4,
-            hidden_dim=config.hidden_dim
+            hidden_dim=config.hidden_dim,
+            seq_layer = config.recurrent_layer
         ).to(self.device)
 
         # Training
@@ -455,7 +432,7 @@ class PolicyGradAgent(BaseAgent):
         episode_rewards = []
 
         with torch.no_grad():
-            for ep in tqdm(range(n_episodes)):
+            for ep in tqdm(range(n_episodes), leave=False):
                 obs = eval_env.reset()
                 episode_reward = 0.0
                 done = False
