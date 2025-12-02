@@ -485,6 +485,7 @@ class DQNAgent(BaseAgent):
             'q_network_state': self.q_network.state_dict(),
             'target_network_state': self.target_network.state_dict(),
             'optimizer_state': self.optimizer.state_dict(),
+            'state_encoder_projection': self.state_encoder.projection.state_dict(),  # CRITICAL: Save encoder projection
             'epsilon': self.epsilon,
             'episode_count': self.episode_count,
             'step_count': self.step_count,
@@ -518,6 +519,20 @@ class DQNAgent(BaseAgent):
         self.q_network.load_state_dict(checkpoint['q_network_state'])
         self.target_network.load_state_dict(checkpoint['target_network_state'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state'])
+        
+        # Restore state encoder projection (if saved)
+        # This is critical for reproducibility - the projection maps observations to the same state space
+        if 'state_encoder_projection' in checkpoint:
+            self.state_encoder.projection.load_state_dict(checkpoint['state_encoder_projection'])
+        else:
+            # Legacy checkpoint without encoder projection - warn user
+            import warnings
+            warnings.warn(
+                "Checkpoint does not contain state_encoder_projection weights. "
+                "Results may vary across runs due to random projection initialization. "
+                "Re-train with updated code to save projection weights.",
+                UserWarning
+            )
         
         # Restore training state
         self.epsilon = checkpoint['epsilon']

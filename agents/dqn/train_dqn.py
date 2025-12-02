@@ -54,7 +54,7 @@ TRAINING_CONFIG = {
     'max_episodes': 1000,  # Maximum training episodes
     'min_episodes': 200,   # Minimum episodes before early stopping
     'validation_freq': 50,  # Validate every N episodes
-    'patience': 5,          # Stop if no improvement for N validations (5 × 50 = 250 episodes)
+    'patience': 7,          # Stop if no improvement for N validations (7 × 50 = 350 episodes)
     'n_val_episodes': 5,    # Episodes per validation window
     'window_length': 100,   # Days per episode window (matches validation)
     'checkpoint_dir': Path('checkpoints/dqn_production'),
@@ -520,8 +520,9 @@ def main():
     agent_name = "ddqn_production" if args.double_dqn else "dqn_production"
     checkpoint_dir = Path(f'checkpoints/{agent_name}')
     
-    # Update checkpoint directory in config
+    # Update checkpoint directory and log file in config
     TRAINING_CONFIG['checkpoint_dir'] = checkpoint_dir
+    TRAINING_CONFIG['log_file'] = Path(f'logs/train_{agent_name}.csv')
     
     # Create agent configuration
     min_buffer_size = max(params['batch_size'], 100)
