@@ -316,7 +316,12 @@ class PolicyGradAgent(BaseAgent):
         prev_w_active   = prev_weights[mask_t]       # [A_t]
 
         # Forward: logits for each active asset
-        logits = self.nn(features_active, prev_w_active, self.episode_start)  # [A_t]
+        logits = self.nn(
+            features_active, 
+            prev_w_active, 
+            True # keep true always - see what happens!!
+            # self.episode_start
+        )  # [A_t]
 
         # After first call in an episode, we no longer have a "no_prev" situation
         self.episode_start = False
