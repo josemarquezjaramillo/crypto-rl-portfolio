@@ -179,6 +179,7 @@ class PolicyNet(nn.Module):
         # asset_emb (hidden_dim) + prev_w(1) + no_prev(1) = hidden_dim + 2
         self.fc1 = nn.Linear(hidden_dim + 2, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, 1)
+        self.relu_activation = nn.LeakyReLU()
 
     def forward(self, features, prev_weights, no_prev):
         """
@@ -209,40 +210,33 @@ class PolicyNet(nn.Module):
         x = torch.cat([asset_emb, pw, no_prev_flag], dim=1)  # [A_t, hidden+2]
 
         # ----------- 4. Feedforward head ----------- #
-        x = torch.relu(self.fc1(x))                 # [A_t, hidden]
+        x = self.relu_activation(self.fc1(x))                 # [A_t, hidden]
         logits = self.fc2(x).squeeze(-1)            # [A_t]
 
         return logits
 
 @dataclass
-class PolicyGradConfig(AgentConfig):
-  # learning
-  learning_rate=1e-4
-  epsilon_start=1.0
-  epsilon_end = 0.05
-  epsilon_decay_episodes = 500
-  # state encoding
-  dataset_path="dataset_v1"
-  max_alloc=0.35
-  # pytorch
-  device='cuda'
-  recurrent_layer = nn.GRU
-  #architecture
-  layers=None
-  hidden_dim = 64
-  # canonical_assets: List[str] = field(default_factory=list)
-
 class PolicyGradAgent(BaseAgent):
+    """
+    Stable Dirichlet Policy Gradient Agent:
+      - Dirichlet(alpha) policy over simplex
+      - Temperature scales concentration without changing mean
+      - REINFORCE update
+    """
+
     def __init__(self, config, env):
         super().__init__(config, env)
 
-        self.config = config
-        self.device = config.device
+        self.config  = config
+        self.device  = config.device
         self.max_alloc = config.max_alloc
 
-        # Epsilon-greedy exploration schedule (used to occasionally ignore policy)
-        self.epsilon_decay_episodes = config.epsilon_decay_episodes
+        # Temperature for Dirichlet
+        self.tau = float(getattr(config, "temperature", 1.0))
+
+        # Epsilon for exploration override
         self.epsilon = config.epsilon_start
+        self.epsilon_decay_episodes = config.epsilon_decay_episodes
         self.epsilon_decay_per_episode = (
             config.epsilon_start - config.epsilon_end
         ) / self.epsilon_decay_episodes
@@ -252,34 +246,37 @@ class PolicyGradAgent(BaseAgent):
             dataset_path=config.dataset_path
         )
 
-        # Policy network → outputs logits for active assets
+        # Policy network → outputs logits → softplus → Dirichlet α
         self.nn = PolicyNet(
             feature_dim=4,
             hidden_dim=config.hidden_dim,
-            seq_layer = config.recurrent_layer
+            seq_layer=config.recurrent_layer,
         ).to(self.device)
 
-        # Training
-        self.training = True
-        self.optimizer = torch.optim.Adam(self.nn.parameters(), lr=config.learning_rate)
+        # Optimizer
+        self.optimizer = torch.optim.Adam(
+            self.nn.parameters(),
+            lr=config.learning_rate,
+        )
 
-        # Episode-wise bookkeeping
-        self.episode_start = True        # flag for "no_prev" mask into PolicyNet
-        self.logprobs = []               # list[Tensor], each scalar log π(a_t | s_t)
-        self.rewards_buf = []            # list[float], env rewards per step
-        self.det_step = False            # tracking whether last action used policy/logprob
+        # Episode bookkeeping
+        self.episode_start = True
+        self.logprobs = []         # scalar log_probs per step
+        self.rewards_buf = []      # python floats
+        self.last_logprob = None   # for most recent stochastic action
+        self.det_step = False
 
-    # ------------------------------------------------------------------
-    # RANDOM POLICY (for epsilon exploration)
-    # ------------------------------------------------------------------
-    def random_policy(self, obs=None):
-        """
-        Sample a random valid portfolio over the *active* assets.
-        """
-        if obs is None:
-            raise ValueError("random_policy() requires obs for correct asset count.")
+    def load(self):
+      pass
+    def save(self):
+      pass
 
-        A_t = len(obs['asset_ids'])
+
+    # ======================================================================
+    # RANDOM ACTION (for epsilon override)
+    # ======================================================================
+    def random_policy(self, obs):
+        A_t = len(obs["asset_ids"])
         if A_t == 0:
             return np.array([], dtype=np.float32)
 
@@ -287,108 +284,110 @@ class PolicyGradAgent(BaseAgent):
         w /= w.sum()
         return w
 
-    # ------------------------------------------------------------------
+
+    # ======================================================================
     # ACTION SELECTION
-    # ------------------------------------------------------------------
+    # ======================================================================
     def select_action(self, obs, deterministic: bool = False):
         """
-        Select an action and (if training) store log_prob for REINFORCE.
-        For training (deterministic=False), we:
-          - compute Dirichlet concentration params from PolicyNet
-          - sample weights from Dirichlet
-          - store log_prob for the REINFORCE update
+        deterministic=False:
+            - epsilon-greedy allowed
+            - stochastic Dirichlet policy
+            - REINFORCE log_prob recorded
+
+        deterministic=True:
+            - NO epsilon-greedy override
+            - STILL stochastic sampling (not eval)
+            - REINFORCE log_prob recorded
+
+        (True evaluation should wrap this in torch.no_grad() at a higher level.)
         """
-        # ----- epsilon-greedy exploration: ignore policy sometimes -----
+
+        # --- Reindex canonical assets ---
+        features, prev_w, mask = self.asset_indexer.reindex(obs)
+
+        features = torch.as_tensor(features, dtype=torch.float32, device=self.device)
+        prev_w   = torch.as_tensor(prev_w, dtype=torch.float32, device=self.device)
+        mask     = torch.as_tensor(mask, dtype=torch.bool,    device=self.device)
+
+        features_active = features[mask]     # [A_t, T, F]
+        prev_w_active   = prev_w[mask]       # [A_t]
+        A_t = prev_w_active.size(0)
+
+        # --- Policy forward pass ---
+        logits = self.nn(
+            features_active,
+            prev_w_active,
+            self.episode_start
+        )
+        self.episode_start = False
+
+        # ==========================================================
+        # STEP 1 — EPSILON-GREEDY OVERRIDE
+        # ==========================================================
         if (not deterministic) and (self.rng.random() < self.epsilon):
+            self.last_logprob = None
             self.det_step = False
             return self.random_policy(obs)
 
-        # ----- policy-driven action -----
-        # Canonical indexing -> then slice to active assets
-        asset_features, prev_weights, mask = self.asset_indexer.reindex(obs)
+        # ==========================================================
+        # STEP 2 — DIRICHLET WITH TEMPERATURE (MEAN-PRESERVING)
+        # ==========================================================
+        # Convert logits → positive α
+        alpha = F.softplus(logits) + 1e-4     # ensures positivity
 
-        asset_features = torch.tensor(asset_features, dtype=torch.float32, device=self.device)
-        prev_weights   = torch.tensor(prev_weights,   dtype=torch.float32, device=self.device)
-        mask_t         = torch.tensor(mask,           dtype=torch.bool,    device=self.device)
+        # Apply temperature (scales sharpness)
+        alpha_scaled = alpha / self.tau
 
-        # Only keep active assets
-        features_active = asset_features[mask_t]     # [A_t, 60, 4]
-        prev_w_active   = prev_weights[mask_t]       # [A_t]
+        # 🔥 The CRITICAL FIX:
+        # Normalize α so total concentration = A_t (keeps Dirichlet mean unchanged)
+        alpha_scaled = alpha_scaled * (A_t / alpha_scaled.sum())
 
-        # Forward: logits for each active asset
-        logits = self.nn(
-            features_active, 
-            prev_w_active, 
-            True # keep true always - see what happens!!
-            # self.episode_start
-        )  # [A_t]
+        # Build distribution
+        dist = Dirichlet(alpha_scaled)
 
-        # After first call in an episode, we no longer have a "no_prev" situation
-        self.episode_start = False
+        # Sample allocation (stochastic even in deterministic=True)
+        weights_t = dist.sample()             # [A_t], simplex
 
-        # Convert logits to positive Dirichlet concentration parameters
-        concentration = F.softplus(logits) + 1e-4    # ensure > 0
+        # Compute log_prob of the sampled action (scalar)
+        log_prob = dist.log_prob(weights_t)
 
-        if deterministic:
-            # Evaluation: use Dirichlet mean (no sampling, no log_prob)
-            self.det_step = False
-            w = concentration / concentration.sum()
-            return w.detach().cpu().numpy()
-
-        # Training: sample from Dirichlet and use log_prob for REINFORCE
-        dist = Dirichlet(concentration)
-        weights = dist.sample()                      # [A_t], sum=1, >=0
-        log_prob = dist.log_prob(weights)           # scalar
-
+        # Keep for REINFORCE
         self.last_logprob = log_prob
-        self.det_step = True
+        self.det_step = False
 
-        return weights.detach().cpu().numpy()
+        # Env receives numpy
+        return weights_t.detach().cpu().numpy()
 
-    # ------------------------------------------------------------------
-    # REINFORCE UPDATE HOOK (CALLED PER STEP)
-    # ------------------------------------------------------------------
+
+    # ======================================================================
+    # STORE REINFORCE DATA
+    # ======================================================================
     def update(self, obs, action, reward, next_obs, done):
         """
-        Accumulate log_probs and rewards for REINFORCE.
-        `reward` is a Python float from the environment (and *should* be detached).
+        Store log_prob and reward for REINFORCE.
         """
-        if self.training and self.det_step:
-            # store REINFORCE ingredients: reward scalar + log π(a|s)
-            self.rewards_buf.append(float(reward))
+        if self.last_logprob is not None:
             self.logprobs.append(self.last_logprob)
-        # return optional metrics (we'll skip for now)
+            self.rewards_buf.append(float(reward))
         return None
 
-    # ------------------------------------------------------------------
-    # SAVE / LOAD STUBS
-    # ------------------------------------------------------------------
-    def load(self, path):
-        pass
 
-    def save(self, path):
-        pass
-
-    # ------------------------------------------------------------------
-    # EPISODE HOOKS
-    # ------------------------------------------------------------------
+    # ======================================================================
+    # EPISODE LIFECYCLE
+    # ======================================================================
     def on_episode_start(self):
-        """
-        Called by BaseAgent at the beginning of each training episode.
-        """
         self.optimizer.zero_grad()
         self.episode_start = True
         self.logprobs = []
         self.rewards_buf = []
+        self.last_logprob = None
+        self.det_step = False
 
-    def on_episode_end(self) -> None:
+    def on_episode_end(self):
         """
-        Called by BaseAgent at the end of each training episode.
-
-        Implements episodic REINFORCE:
-          loss = -Σ_t (G_t * log π(a_t | s_t))
-
-        where G_t is the (optionally normalized) return from step t onward.
+        REINFORCE:
+            loss = - Σ_t G_t * log π(a_t|s_t)
         """
         # Epsilon decay
         if self.epsilon > self.config.epsilon_end:
@@ -397,12 +396,10 @@ class PolicyGradAgent(BaseAgent):
                 self.epsilon - self.epsilon_decay_per_episode
             )
 
-        if not self.logprobs:
-            # Nothing to update (e.g., episode with only random actions)
+        if len(self.logprobs) == 0:
             return
 
-        # ----- compute returns G_t from rewards -----
-        # simple undiscounted MC return
+        # ---- Compute returns ----
         returns = []
         G = 0.0
         for r in reversed(self.rewards_buf):
@@ -411,22 +408,26 @@ class PolicyGradAgent(BaseAgent):
 
         returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
 
-        # normalize returns as a cheap baseline
+        # Normalize returns for variance reduction
         if returns.numel() > 1:
-            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+            std = returns.std()
+            if std > 1e-6:
+                returns = (returns - returns.mean()) / (std + 1e-8)
 
-        log_probs = torch.stack(self.logprobs)
+        log_probs = torch.stack(self.logprobs)  # shape [T]
+        assert log_probs.shape == returns.shape
 
-        # REINFORCE loss: negative because we maximize expected return
         loss = -(returns * log_probs).sum()
 
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.nn.parameters(), 1.0)
         self.optimizer.step()
 
-    # ------------------------------------------------------------------
-    # EVALUATION (NO GRAD / NO UPDATES)
-    # ------------------------------------------------------------------
+
+    # ======================================================================
+    # EVALUATION — TRUE DETERMINISTIC MODE
+    # ======================================================================
     def evaluate_on_env(
         self,
         eval_env: PortfolioEnv,
@@ -434,29 +435,48 @@ class PolicyGradAgent(BaseAgent):
         deterministic: bool = True,
         max_steps: int = 200,
     ):
+        """
+        Deterministic evaluation → use *mean* of Dirichlet, not sampling.
+        (Handled here, NOT in select_action)
+        """
         episode_rewards = []
 
         with torch.no_grad():
-            for ep in tqdm(range(n_episodes), leave=False):
+            for ep in range(n_episodes):
                 obs = eval_env.reset()
-                episode_reward = 0.0
                 done = False
-                step_count = 0
+                total_reward = 0
+                t = 0
 
-                # reset flag for no_prev inside evaluation as well
                 self.episode_start = True
 
-                while not done and step_count < max_steps:
-                    action = self.select_action(obs, deterministic=deterministic)
-                    obs, reward, done, info = eval_env.step(action)
-                    episode_reward += reward
-                    step_count += 1
+                while not done and t < max_steps:
+                    # Rebuild policy input
+                    features, prev_w, mask = self.asset_indexer.reindex(obs)
+                    features = torch.tensor(features, dtype=torch.float32, device=self.device)
+                    prev_w   = torch.tensor(prev_w,   dtype=torch.float32, device=self.device)
+                    mask     = torch.tensor(mask,     dtype=torch.bool,    device=self.device)
 
-                episode_rewards.append(episode_reward)
+                    logits = self.nn(
+                        features[mask],
+                        prev_w[mask],
+                        self.episode_start
+                    )
+                    self.episode_start = False
+
+                    # Deterministic action = Dirichlet mean = alpha / sum(alpha)
+                    alpha = F.softplus(logits) + 1e-4
+                    w = (alpha / alpha.sum()).cpu().numpy()
+
+                    obs, r, done, info = eval_env.step(w)
+                    total_reward += r
+                    t += 1
+
+                episode_rewards.append(total_reward)
 
         return {
-            'mean_return': float(np.mean(episode_rewards)),
-            'std_return': float(np.std(episode_rewards)),
-            'min_return': float(np.min(episode_rewards)),
-            'max_return': float(np.max(episode_rewards)),
+            "mean_return": float(np.mean(episode_rewards)),
+            "std_return": float(np.std(episode_rewards)),
+            "min_return": float(np.min(episode_rewards)),
+            "max_return": float(np.max(episode_rewards)),
         }
