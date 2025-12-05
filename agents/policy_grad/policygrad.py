@@ -5,6 +5,8 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torch.distributions import Dirichlet
 
+import pickle
+
 import numpy as np
 import numpy.typing as npt
 from typing import List, Dict, Any, Tuple
