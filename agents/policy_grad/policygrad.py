@@ -151,67 +151,64 @@ class AssetIndexer:
 
 class PolicyNet(nn.Module):
     """
-    Simplest functional policy network:
-      GRU → per-asset embedding → concat prev_w + no_prev → MLP → logits
-
-    Input shapes:
-      features:     [A_t, 60, 4]
-      prev_weights: [A_t]
-      no_prev:      bool
-
-    Output:
-      logits:       [A_t]
+    One GRU over entire market state per timestep.
+    Outputs logits for all A assets simultaneously.
     """
 
-    def __init__(self, feature_dim=4, hidden_dim=64, seq_layer=nn.GRU):
+    def __init__(self, feature_dim=4, hidden_dim=128, seq_layer = nn.GRU):
         super().__init__()
 
-        self.hidden_dim = hidden_dim
+        A = 10
 
-        # GRU for each asset's sequence
-        self.encoder = seq_layer(
-            input_size=feature_dim,
+        self.A = A
+        self.input_dim = A * feature_dim
+
+        # One GRU over entire market sequence
+        self.gru = seq_layer(
+            input_size=self.input_dim,
             hidden_size=hidden_dim,
             batch_first=True
         )
 
-        # MLP after concatenating prev_w + no_prev flag
-        # asset_emb (hidden_dim) + prev_w(1) + no_prev(1) = hidden_dim + 2
-        self.fc1 = nn.Linear(hidden_dim + 2, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, 1)
-        self.relu_activation = nn.LeakyReLU()
+        # MLP head outputs A logits at once
+        self.fc1 = nn.Linear(hidden_dim + A + 1, 128)
+        self.fc2 = nn.Linear(128, A)
+        self.act = nn.LeakyReLU(0.1)
 
-    def forward(self, features, prev_weights, no_prev):
+    def forward(self, features, prev_alloc, first_step):
         """
-        features:     [A_t, 60, 4]
-        prev_weights: [A_t]
-        no_prev:      bool
+        features:   [A, 60, 4]
+        prev_alloc: [A]   (full previous allocation vector)
+        first_step: bool
         """
 
+        A = self.A
         device = features.device
-        A_t = features.size(0)
 
-        # ----------- 1. Encode sequences ----------- #
-        # GRU expects [batch=A_t, seq=60, feature=4]
-        enc, _ = self.encoder(features)        # [A_t, 60, hidden]
-        asset_emb = enc[:, -1]                 # last timestep: [A_t, hidden]
+        # ---- 1. Reshape to full market sequence ----
+        # features: [A, 60, 4] → transpose → [60, A, 4]
+        # then reshape to [1, 60, A*4]
+        seq = features.permute(1, 0, 2).reshape(1, 60, A * 4)
 
-        # ----------- 2. Prepare prev weight inputs ----------- #
-        pw = prev_weights.to(device).unsqueeze(1)   # [A_t, 1]
+        # ---- 2. GRU processes the entire market jointly ----
+        out, _ = self.gru(seq)              # [1, 60, hidden_dim]
+        global_emb = out[:, -1, :]          # [1, hidden_dim]
 
-        no_prev_flag = torch.full(
-            (A_t, 1),
-            1.0 if no_prev else 0.0,
-            device=device,
-            dtype=pw.dtype
-        )                                            # [A_t, 1]
+        # ---- 3. Prepare state additions ----
+        prev_alloc_vec = prev_alloc.unsqueeze(0)   # [1, A]
 
-        # ----------- 3. Combine features ----------- #
-        x = torch.cat([asset_emb, pw, no_prev_flag], dim=1)  # [A_t, hidden+2]
+        if first_step:
+            prev_alloc_vec = torch.zeros_like(prev_alloc_vec)
 
-        # ----------- 4. Feedforward head ----------- #
-        x = self.relu_activation(self.fc1(x))                 # [A_t, hidden]
-        logits = self.fc2(x).squeeze(-1)            # [A_t]
+        first_step_flag = torch.ones((1, 1), device=device) if first_step else \
+                          torch.zeros((1, 1), device=device)
+
+        # ---- 4. Combine into global state ----
+        x = torch.cat([global_emb, prev_alloc_vec, first_step_flag], dim=1)
+
+        # ---- 5. MLP head outputs logits for ALL A assets ----
+        x = self.act(self.fc1(x))
+        logits = self.fc2(x).squeeze(0)     # [A]
 
         return logits
 
