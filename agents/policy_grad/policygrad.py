@@ -151,64 +151,72 @@ class AssetIndexer:
 
 class PolicyNet(nn.Module):
     """
-    One GRU over entire market state per timestep.
-    Outputs logits for all A assets simultaneously.
+    Cross-asset GRU Policy Network
+    --------------------------------
+    Inputs:
+        features: [A_canonical, T=60, F=4]
+        prev_alloc: [A_canonical]
+        first_step: bool
+
+    Output:
+        logits_full: [A_canonical]
     """
 
-    def __init__(self, feature_dim=4, hidden_dim=128, seq_layer = nn.GRU):
+    def __init__(self, A_canonical, feature_dim=4, hidden_dim=128, recurrent_layer=nn.GRU):
         super().__init__()
 
-        A = 10
+        self.A = A_canonical
+        self.feature_dim = feature_dim
+        self.input_dim = A_canonical * feature_dim
 
-        self.A = A
-        self.input_dim = A * feature_dim
-
-        # One GRU over entire market sequence
-        self.gru = seq_layer(
+        # ---- Global GRU across all assets ----
+        self.gru = recurrent_layer(
             input_size=self.input_dim,
             hidden_size=hidden_dim,
-            batch_first=True
+            batch_first=True,
         )
 
-        # MLP head outputs A logits at once
-        self.fc1 = nn.Linear(hidden_dim + A + 1, 128)
-        self.fc2 = nn.Linear(128, A)
+        # ---- MLP head outputs logits for ALL assets ----
+        self.fc1 = nn.Linear(hidden_dim + A_canonical + 1, 128)
+        self.fc2 = nn.Linear(128, A_canonical)
         self.act = nn.LeakyReLU(0.1)
 
     def forward(self, features, prev_alloc, first_step):
         """
-        features:   [A, 60, 4]
-        prev_alloc: [A]   (full previous allocation vector)
-        first_step: bool
+        features:   [A, T, F]
+        prev_alloc: [A]
         """
 
-        A = self.A
         device = features.device
+        A = self.A
 
-        # ---- 1. Reshape to full market sequence ----
-        # features: [A, 60, 4] → transpose → [60, A, 4]
-        # then reshape to [1, 60, A*4]
-        seq = features.permute(1, 0, 2).reshape(1, 60, A * 4)
+        # ---- 1. Reshape to a single market sequence ----
+        # features: [A, 60, 4] → [60, A, 4] → [1, 60, A*4]
+        seq = (
+            features.permute(1, 0, 2)
+            .reshape(1, features.size(1), A * self.feature_dim)
+        )
 
-        # ---- 2. GRU processes the entire market jointly ----
-        out, _ = self.gru(seq)              # [1, 60, hidden_dim]
-        global_emb = out[:, -1, :]          # [1, hidden_dim]
+        # ---- 2. GRU over full market ----
+        out, _ = self.gru(seq)          # [1, T, hidden]
+        global_emb = out[:, -1, :]      # [1, hidden]
 
-        # ---- 3. Prepare state additions ----
-        prev_alloc_vec = prev_alloc.unsqueeze(0)   # [1, A]
+        # ---- 3. Previous full allocation vector ----
+        prev_alloc_vec = prev_alloc.unsqueeze(0)  # [1, A]
 
         if first_step:
             prev_alloc_vec = torch.zeros_like(prev_alloc_vec)
 
-        first_step_flag = torch.ones((1, 1), device=device) if first_step else \
-                          torch.zeros((1, 1), device=device)
+        # ---- 4. First-step flag ----
+        fs_flag = torch.ones((1, 1), device=device) if first_step \
+                  else torch.zeros((1, 1), device=device)
 
-        # ---- 4. Combine into global state ----
-        x = torch.cat([global_emb, prev_alloc_vec, first_step_flag], dim=1)
+        # ---- 5. Combine market embedding + prev_alloc + flag ----
+        x = torch.cat([global_emb, prev_alloc_vec, fs_flag], dim=1)
 
-        # ---- 5. MLP head outputs logits for ALL A assets ----
+        # ---- 6. MLP head produces logits for ALL assets ----
         x = self.act(self.fc1(x))
-        logits = self.fc2(x).squeeze(0)     # [A]
+        logits = self.fc2(x).squeeze(0)          # [A]
 
         return logits
 
@@ -232,10 +240,7 @@ class PolicyGradConfig(AgentConfig):
 
 class PolicyGradAgent(BaseAgent):
     """
-    Stable Dirichlet Policy Gradient Agent:
-      - Dirichlet(alpha) policy over simplex
-      - Temperature scales concentration without changing mean
-      - REINFORCE update
+    Cross-Asset Dirichlet Policy Gradient Agent (REINFORCE)
     """
 
     def __init__(self, config, env):
@@ -245,26 +250,28 @@ class PolicyGradAgent(BaseAgent):
         self.device  = config.device
         self.max_alloc = config.max_alloc
 
-        # Temperature for Dirichlet
+        # Dirichlet temperature scaling
         self.tau = float(getattr(config, "temperature", 1.0))
 
-        # Epsilon for exploration override
+        # Epsilon scheduling
         self.epsilon = config.epsilon_start
         self.epsilon_decay_episodes = config.epsilon_decay_episodes
         self.epsilon_decay_per_episode = (
             config.epsilon_start - config.epsilon_end
         ) / self.epsilon_decay_episodes
 
-        # Canonical asset indexer
+        # Canonical asset loader
         self.asset_indexer = AssetIndexer(
             dataset_path=config.dataset_path
         )
+        A_canonical = len(self.asset_indexer.canonical_assets)
 
-        # Policy network → outputs logits → softplus → Dirichlet α
+        # ---- POLICY NETWORK ----
         self.nn = PolicyNet(
+            A_canonical=A_canonical,
             feature_dim=4,
             hidden_dim=config.hidden_dim,
-            seq_layer=config.recurrent_layer,
+            recurrent_layer=config.recurrent_layer
         ).to(self.device)
 
         # Optimizer
@@ -273,123 +280,88 @@ class PolicyGradAgent(BaseAgent):
             lr=config.learning_rate,
         )
 
-        # Episode bookkeeping
+        # Episode data
         self.episode_start = True
-        self.logprobs = []         # scalar log_probs per step
-        self.rewards_buf = []      # python floats
-        self.last_logprob = None   # for most recent stochastic action
+        self.logprobs = []
+        self.rewards_buf = []
+        self.last_logprob = None
         self.det_step = False
 
-    def load(self):
-      pass
-    def save(self):
-      pass
+    def load(self): pass
+    def save(self): pass
 
 
-    # ======================================================================
-    # RANDOM ACTION (for epsilon override)
-    # ======================================================================
+    # =========================================================
+    # RANDOM ACTION
+    # =========================================================
     def random_policy(self, obs):
         A_t = len(obs["asset_ids"])
         if A_t == 0:
             return np.array([], dtype=np.float32)
-
         w = np.random.rand(A_t).astype(np.float32)
-        w /= w.sum()
-        return w
+        return w / w.sum()
 
 
-    # ======================================================================
+    # =========================================================
     # ACTION SELECTION
-    # ======================================================================
-    def select_action(self, obs, deterministic: bool = False):
+    # =========================================================
+    def select_action(self, obs, deterministic=False):
         """
-        deterministic=False:
-            - epsilon-greedy allowed
-            - stochastic Dirichlet policy
-            - REINFORCE log_prob recorded
-
-        deterministic=True:
-            - NO epsilon-greedy override
-            - STILL stochastic sampling (not eval)
-            - REINFORCE log_prob recorded
-
-        (True evaluation should wrap this in torch.no_grad() at a higher level.)
+        Masking is applied AFTER forward pass → critical fix.
         """
 
-        # --- Reindex canonical assets ---
+        # ---- Canonical reindex ----
         features, prev_w, mask = self.asset_indexer.reindex(obs)
 
-        features = torch.as_tensor(features, dtype=torch.float32, device=self.device)
-        prev_w   = torch.as_tensor(prev_w, dtype=torch.float32, device=self.device)
-        mask     = torch.as_tensor(mask, dtype=torch.bool,    device=self.device)
+        features = torch.tensor(features, dtype=torch.float32, device=self.device)
+        prev_w   = torch.tensor(prev_w,   dtype=torch.float32, device=self.device)
+        mask     = torch.tensor(mask,     dtype=torch.bool,    device=self.device)
 
-        features_active = features[mask]     # [A_t, T, F]
-        prev_w_active   = prev_w[mask]       # [A_t]
-        A_t = prev_w_active.size(0)
+        # ---- Policy forward on FULL canonical set ----
+        logits_full = self.nn(features, prev_w, self.episode_start)
+        logits = logits_full[mask]            # select active assets
+        prev_w_active = prev_w[mask]
 
-        # --- Policy forward pass ---
-        logits = self.nn(
-            features_active,
-            prev_w_active,
-            self.episode_start
-        )
         self.episode_start = False
 
-        # ==========================================================
-        # STEP 1 — EPSILON-GREEDY OVERRIDE
-        # ==========================================================
+        # ---- EPSILON OVERRIDE ----
         if (not deterministic) and (self.rng.random() < self.epsilon):
             self.last_logprob = None
             self.det_step = False
             return self.random_policy(obs)
 
-        # ==========================================================
-        # STEP 2 — DIRICHLET WITH TEMPERATURE (MEAN-PRESERVING)
-        # ==========================================================
-        # Convert logits → positive α
-        alpha = F.softplus(logits) + 1e-4     # ensures positivity
-
-        # Apply temperature (scales sharpness)
+        # ---- DIRICHLET SAMPLING ----
+        alpha = F.softplus(logits) + 1e-4
         alpha_scaled = alpha / self.tau
 
-        # 🔥 The CRITICAL FIX:
-        # Normalize α so total concentration = A_t (keeps Dirichlet mean unchanged)
+        # mean-preserving normalization
+        A_t = logits.numel()
         alpha_scaled = alpha_scaled * (A_t / alpha_scaled.sum())
 
-        # Build distribution
         dist = Dirichlet(alpha_scaled)
+        w_t = dist.sample()
+        log_prob = dist.log_prob(w_t)
 
-        # Sample allocation (stochastic even in deterministic=True)
-        weights_t = dist.sample()             # [A_t], simplex
-
-        # Compute log_prob of the sampled action (scalar)
-        log_prob = dist.log_prob(weights_t)
-
-        # Keep for REINFORCE
+        # Store log_prob for REINFORCE
         self.last_logprob = log_prob
         self.det_step = False
 
-        # Env receives numpy
-        return weights_t.detach().cpu().numpy()
+        return w_t.detach().cpu().numpy()
 
 
-    # ======================================================================
-    # STORE REINFORCE DATA
-    # ======================================================================
+    # =========================================================
+    # STORE STEP INFO
+    # =========================================================
     def update(self, obs, action, reward, next_obs, done):
-        """
-        Store log_prob and reward for REINFORCE.
-        """
         if self.last_logprob is not None:
             self.logprobs.append(self.last_logprob)
             self.rewards_buf.append(float(reward))
         return None
 
 
-    # ======================================================================
+    # =========================================================
     # EPISODE LIFECYCLE
-    # ======================================================================
+    # =========================================================
     def on_episode_start(self):
         self.optimizer.zero_grad()
         self.episode_start = True
@@ -399,11 +371,6 @@ class PolicyGradAgent(BaseAgent):
         self.det_step = False
 
     def on_episode_end(self):
-        """
-        REINFORCE:
-            loss = - Σ_t G_t * log π(a_t|s_t)
-        """
-        # Epsilon decay
         if self.epsilon > self.config.epsilon_end:
             self.epsilon = max(
                 self.config.epsilon_end,
@@ -413,7 +380,7 @@ class PolicyGradAgent(BaseAgent):
         if len(self.logprobs) == 0:
             return
 
-        # ---- Compute returns ----
+        # ---- COMPUTE RETURNS ----
         returns = []
         G = 0.0
         for r in reversed(self.rewards_buf):
@@ -422,13 +389,12 @@ class PolicyGradAgent(BaseAgent):
 
         returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
 
-        # Normalize returns for variance reduction
         if returns.numel() > 1:
             std = returns.std()
             if std > 1e-6:
                 returns = (returns - returns.mean()) / (std + 1e-8)
 
-        log_probs = torch.stack(self.logprobs)  # shape [T]
+        log_probs = torch.stack(self.logprobs)
         assert log_probs.shape == returns.shape
 
         loss = -(returns * log_probs).sum()
@@ -439,58 +405,43 @@ class PolicyGradAgent(BaseAgent):
         self.optimizer.step()
 
 
-    # ======================================================================
-    # EVALUATION — TRUE DETERMINISTIC MODE
-    # ======================================================================
-    def evaluate_on_env(
-        self,
-        eval_env: PortfolioEnv,
-        n_episodes: int = 5,
-        deterministic: bool = True,
-        max_steps: int = 200,
-    ):
-        """
-        Deterministic evaluation → use *mean* of Dirichlet, not sampling.
-        (Handled here, NOT in select_action)
-        """
+    # =========================================================
+    # EVALUATION MODE
+    # =========================================================
+    @torch.no_grad()
+    def evaluate_on_env(self, eval_env, n_episodes=5, deterministic=True, max_steps=200):
         episode_rewards = []
 
-        with torch.no_grad():
-            for ep in range(n_episodes):
-                obs = eval_env.reset()
-                done = False
-                total_reward = 0
-                t = 0
+        for ep in range(n_episodes):
+            obs = eval_env.reset()
+            done = False
+            total_reward = 0
+            t = 0
+            self.episode_start = True
 
-                self.episode_start = True
+            while not done and t < max_steps:
 
-                while not done and t < max_steps:
-                    # Rebuild policy input
-                    features, prev_w, mask = self.asset_indexer.reindex(obs)
-                    features = torch.tensor(features, dtype=torch.float32, device=self.device)
-                    prev_w   = torch.tensor(prev_w,   dtype=torch.float32, device=self.device)
-                    mask     = torch.tensor(mask,     dtype=torch.bool,    device=self.device)
+                features, prev_w, mask = self.asset_indexer.reindex(obs)
+                features = torch.tensor(features, dtype=torch.float32, device=self.device)
+                prev_w   = torch.tensor(prev_w,   dtype=torch.float32, device=self.device)
+                mask     = torch.tensor(mask,     dtype=torch.bool,    device=self.device)
 
-                    logits = self.nn(
-                        features[mask],
-                        prev_w[mask],
-                        self.episode_start
-                    )
-                    self.episode_start = False
+                logits_full = self.nn(features, prev_w, self.episode_start)
+                logits = logits_full[mask]
+                self.episode_start = False
 
-                    # Deterministic action = Dirichlet mean = alpha / sum(alpha)
-                    alpha = F.softplus(logits) + 1e-4
-                    w = (alpha / alpha.sum()).cpu().numpy()
+                alpha = F.softplus(logits) + 1e-4
+                w = (alpha / alpha.sum()).cpu().numpy()
 
-                    obs, r, done, info = eval_env.step(w)
-                    total_reward += r
-                    t += 1
+                obs, r, done, info = eval_env.step(w)
+                total_reward += r
+                t += 1
 
-                episode_rewards.append(total_reward)
+            episode_rewards.append(total_reward)
 
         return {
             "mean_return": float(np.mean(episode_rewards)),
-            "std_return": float(np.std(episode_rewards)),
-            "min_return": float(np.min(episode_rewards)),
-            "max_return": float(np.max(episode_rewards)),
+            "std_return":  float(np.std(episode_rewards)),
+            "min_return":  float(np.min(episode_rewards)),
+            "max_return":  float(np.max(episode_rewards)),
         }
