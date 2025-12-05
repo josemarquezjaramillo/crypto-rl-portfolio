@@ -288,49 +288,44 @@ class PolicyGradAgent(BaseAgent):
         self.det_step = False
 
     def save(self, save_dir: Path):
-        """
-        Save the Policy Gradient Agent to a directory.
-    
-        Directory contents:
-            policy_weights.pt   - model state_dict
-            optimizer.pt        - optimizer state_dict
-            agent.pkl           - config + metadata
-        """
-    
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
     
-        # --------------------------
         # 1. Save policy network
-        # --------------------------
-        torch.save(
-            self.nn.state_dict(),
-            save_dir / "policy_weights.pt"
-        )
+        torch.save(self.nn.state_dict(), save_dir / "policy_weights.pt")
     
-        # --------------------------
         # 2. Save optimizer
-        # --------------------------
-        torch.save(
-            self.optimizer.state_dict(),
-            save_dir / "optimizer.pt"
-        )
+        torch.save(self.optimizer.state_dict(), save_dir / "optimizer.pt")
     
-        # --------------------------
-        # 3. Save config + metadata
-        # --------------------------
+        # 3. Extract RNG state (Python or NumPy)
+        rng_state = None
+    
+        if hasattr(self, "rng") and self.rng is not None:
+            try:
+                # Python random.Random
+                if hasattr(self.rng, "getstate"):
+                    rng_state = ("python", self.rng.getstate())
+    
+                # NumPy Generator
+                elif hasattr(self.rng, "bit_generator"):
+                    rng_state = ("numpy", self.rng.bit_generator.state)
+    
+            except Exception:
+                rng_state = None
+    
         agent_state = {
-            "config": self.config,                     # dataclass (pickleable)
+            "config": self.config,
             "agent_name": getattr(self.config, "agent_name", None),
             "epsilon": self.epsilon,
             "episode_start": self.episode_start,
-            "rng_state": self.rng.getstate() if hasattr(self, "rng") else None,
+            "rng_state": rng_state,
         }
     
         with open(save_dir / "agent.pkl", "wb") as f:
             pickle.dump(agent_state, f)
     
         print(f"[PolicyGradAgent] Saved checkpoint to: {save_dir}")
+
 
     def load(self, load_dir: Path):
         """
