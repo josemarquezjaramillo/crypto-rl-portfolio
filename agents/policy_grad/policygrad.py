@@ -289,20 +289,39 @@ class PolicyGradAgent(BaseAgent):
 
     def save(self, save_dir: Path):
         """
-        Save agent state into a directory using pickle for config + metadata.
+        Save the Policy Gradient Agent to a directory.
+    
+        Directory contents:
+            policy_weights.pt   - model state_dict
+            optimizer.pt        - optimizer state_dict
+            agent.pkl           - config + metadata
         """
+    
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
     
-        # 1. Save NN weights
-        torch.save(self.nn.state_dict(), save_dir / "policy_weights.pt")
+        # --------------------------
+        # 1. Save policy network
+        # --------------------------
+        torch.save(
+            self.nn.state_dict(),
+            save_dir / "policy_weights.pt"
+        )
     
-        # 2. Save optimizer state
-        torch.save(self.optimizer.state_dict(), save_dir / "optimizer.pt")
+        # --------------------------
+        # 2. Save optimizer
+        # --------------------------
+        torch.save(
+            self.optimizer.state_dict(),
+            save_dir / "optimizer.pt"
+        )
     
-        # 3. Serialize training state + config in a pickle
+        # --------------------------
+        # 3. Save config + metadata
+        # --------------------------
         agent_state = {
-            "config": self.config,      # PolicyGradConfig dataclass
+            "config": self.config,                     # dataclass (pickleable)
+            "agent_name": getattr(self.config, "agent_name", None),
             "epsilon": self.epsilon,
             "episode_start": self.episode_start,
             "rng_state": self.rng.getstate() if hasattr(self, "rng") else None,
@@ -312,46 +331,66 @@ class PolicyGradAgent(BaseAgent):
             pickle.dump(agent_state, f)
     
         print(f"[PolicyGradAgent] Saved checkpoint to: {save_dir}")
-    
-    
+
     def load(self, load_dir: Path):
         """
-        Load agent state from a checkpoint directory.
+        Load the Policy Gradient Agent from a directory.
         """
         load_dir = Path(load_dir)
     
-        # 1. Load NN weights
+        # --------------------------
+        # 1. Load policy weights
+        # --------------------------
         policy_path = load_dir / "policy_weights.pt"
         if policy_path.exists():
-            self.nn.load_state_dict(torch.load(policy_path, map_location=self.device))
+            state = torch.load(policy_path, map_location=self.device)
+            self.nn.load_state_dict(state)
         else:
             raise FileNotFoundError(f"Missing {policy_path}")
     
+        # --------------------------
         # 2. Load optimizer
+        # --------------------------
         optim_path = load_dir / "optimizer.pt"
         if optim_path.exists():
-            self.optimizer.load_state_dict(torch.load(optim_path, map_location=self.device))
+            opt_state = torch.load(optim_path, map_location=self.device)
+            self.optimizer.load_state_dict(opt_state)
         else:
-            print("[PolicyGradAgent] Warning: optimizer state not found.")
+            print("[PolicyGradAgent] Warning: optimizer.pt not found (OK for inference).")
     
-        # 3. Load training state
+        # --------------------------
+        # 3. Load metadata
+        # --------------------------
         pkl_path = load_dir / "agent.pkl"
         if pkl_path.exists():
             with open(pkl_path, "rb") as f:
                 agent_state = pickle.load(f)
     
-            # Apply state
-            self.config = agent_state.get("config", self.config)
+            # restore config
+            if "config" in agent_state and agent_state["config"] is not None:
+                self.config = agent_state["config"]
+    
+            # restore name
+            if "agent_name" in agent_state:
+                self.config.agent_name = agent_state["agent_name"]
+    
+            # restore training state
             self.epsilon = agent_state.get("epsilon", self.epsilon)
             self.episode_start = agent_state.get("episode_start", True)
     
+            # RNG restore if available
             if agent_state.get("rng_state") is not None and hasattr(self, "rng"):
-                self.rng.setstate(agent_state["rng_state"])
+                try:
+                    self.rng.setstate(agent_state["rng_state"])
+                except Exception:
+                    print("[PolicyGradAgent] Warning: RNG state incompatible, skipping.")
     
         else:
-            print("[PolicyGradAgent] Warning: agent.pkl not found. Config not restored.")
+            print("[PolicyGradAgent] Warning: agent.pkl not found (config not restored).")
     
         print(f"[PolicyGradAgent] Loaded checkpoint from: {load_dir}")
+
+
 
     # =========================================================
     # RANDOM ACTION
