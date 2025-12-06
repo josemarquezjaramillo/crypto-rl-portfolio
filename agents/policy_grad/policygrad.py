@@ -428,15 +428,15 @@ class PolicyGradAgent(BaseAgent):
             self.det_step = False
             return self.random_policy(obs)
 
-        # ---- DIRICHLET SAMPLING ----
-        alpha = F.softplus(logits) + 1e-4
-        alpha_scaled = alpha / self.tau
-
-        # mean-preserving normalization
-        A_t = logits.numel()
-        alpha_scaled = alpha_scaled * (A_t / alpha_scaled.sum())
-
-        dist = Dirichlet(alpha_scaled)
+        # temperature applied at the logits level
+        scaled_logits = logits / self.tau  
+        
+        alpha = F.softplus(scaled_logits) + 1e-4  
+        
+        # global variance control (optional)
+        alpha = alpha * self.dirichlet_conc_scale  
+        
+        dist = Dirichlet(alpha)
         w_t = dist.sample()
         log_prob = dist.log_prob(w_t)
 
