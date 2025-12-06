@@ -255,14 +255,6 @@ class PolicyGradAgent(BaseAgent):
         # Dirichlet temperature scaling
         self.tau = float(getattr(config, "temperature", 1.0))
 
-        # Dirichlet params: these matter a LOT
-        self.dirichlet_min_conc = float(
-            getattr(config, "dirichlet_min_conc", 1e-3)
-        )
-        self.dirichlet_conc_scale = float(
-            getattr(config, "dirichlet_conc_scale", 0.5)  # 0.1–1.0 is a sane range
-        )
-
         # Epsilon scheduling
         self.epsilon = config.epsilon_start
         self.epsilon_decay_episodes = config.epsilon_decay_episodes
@@ -300,29 +292,29 @@ class PolicyGradAgent(BaseAgent):
     def save(self, save_dir: Path):
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
-    
+
         # 1. Save policy network
         torch.save(self.nn.state_dict(), save_dir / "policy_weights.pt")
-    
+
         # 2. Save optimizer
         torch.save(self.optimizer.state_dict(), save_dir / "optimizer.pt")
-    
+
         # 3. Extract RNG state (Python or NumPy)
         rng_state = None
-    
+
         if hasattr(self, "rng") and self.rng is not None:
             try:
                 # Python random.Random
                 if hasattr(self.rng, "getstate"):
                     rng_state = ("python", self.rng.getstate())
-    
+
                 # NumPy Generator
                 elif hasattr(self.rng, "bit_generator"):
                     rng_state = ("numpy", self.rng.bit_generator.state)
-    
+
             except Exception:
                 rng_state = None
-    
+
         agent_state = {
             "config": self.config,
             "agent_name": getattr(self.config, "agent_name", None),
@@ -330,10 +322,10 @@ class PolicyGradAgent(BaseAgent):
             "episode_start": self.episode_start,
             "rng_state": rng_state,
         }
-    
+
         with open(save_dir / "agent.pkl", "wb") as f:
             pickle.dump(agent_state, f)
-    
+
         print(f"[PolicyGradAgent] Saved checkpoint to: {save_dir}")
 
 
@@ -342,7 +334,7 @@ class PolicyGradAgent(BaseAgent):
         Load the Policy Gradient Agent from a directory.
         """
         load_dir = Path(load_dir)
-    
+
         # --------------------------
         # 1. Load policy weights
         # --------------------------
@@ -352,7 +344,7 @@ class PolicyGradAgent(BaseAgent):
             self.nn.load_state_dict(state)
         else:
             raise FileNotFoundError(f"Missing {policy_path}")
-    
+
         # --------------------------
         # 2. Load optimizer
         # --------------------------
@@ -362,7 +354,7 @@ class PolicyGradAgent(BaseAgent):
             self.optimizer.load_state_dict(opt_state)
         else:
             print("[PolicyGradAgent] Warning: optimizer.pt not found (OK for inference).")
-    
+
         # --------------------------
         # 3. Load metadata
         # --------------------------
@@ -370,29 +362,29 @@ class PolicyGradAgent(BaseAgent):
         if pkl_path.exists():
             with open(pkl_path, "rb") as f:
                 agent_state = pickle.load(f)
-    
+
             # restore config
             if "config" in agent_state and agent_state["config"] is not None:
                 self.config = agent_state["config"]
-    
+
             # restore name
             if "agent_name" in agent_state:
                 self.config.agent_name = agent_state["agent_name"]
-    
+
             # restore training state
             self.epsilon = agent_state.get("epsilon", self.epsilon)
             self.episode_start = agent_state.get("episode_start", True)
-    
+
             # RNG restore if available
             if agent_state.get("rng_state") is not None and hasattr(self, "rng"):
                 try:
                     self.rng.setstate(agent_state["rng_state"])
                 except Exception:
                     print("[PolicyGradAgent] Warning: RNG state incompatible, skipping.")
-    
+
         else:
             print("[PolicyGradAgent] Warning: agent.pkl not found (config not restored).")
-    
+
         print(f"[PolicyGradAgent] Loaded checkpoint from: {load_dir}")
 
 
@@ -436,15 +428,15 @@ class PolicyGradAgent(BaseAgent):
             self.det_step = False
             return self.random_policy(obs)
 
-        # temperature applied at the logits level
-        scaled_logits = logits / self.tau  
-        
-        alpha = F.softplus(scaled_logits) + 1e-4  
-        
-        # global variance control (optional)
-        alpha = alpha * self.dirichlet_conc_scale  
-        
-        dist = Dirichlet(alpha)
+        # ---- DIRICHLET SAMPLING ----
+        alpha = F.softplus(logits) + 1e-4
+        alpha_scaled = alpha / self.tau
+
+        # mean-preserving normalization
+        A_t = logits.numel()
+        alpha_scaled = alpha_scaled * (A_t / alpha_scaled.sum())
+
+        dist = Dirichlet(alpha_scaled)
         w_t = dist.sample()
         log_prob = dist.log_prob(w_t)
 
