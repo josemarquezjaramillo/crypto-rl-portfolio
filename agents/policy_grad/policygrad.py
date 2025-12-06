@@ -255,6 +255,14 @@ class PolicyGradAgent(BaseAgent):
         # Dirichlet temperature scaling
         self.tau = float(getattr(config, "temperature", 1.0))
 
+        # Dirichlet params: these matter a LOT
+        self.dirichlet_min_conc = float(
+            getattr(config, "dirichlet_min_conc", 1e-3)
+        )
+        self.dirichlet_conc_scale = float(
+            getattr(config, "dirichlet_conc_scale", 0.5)  # 0.1–1.0 is a sane range
+        )
+
         # Epsilon scheduling
         self.epsilon = config.epsilon_start
         self.epsilon_decay_episodes = config.epsilon_decay_episodes
