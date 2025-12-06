@@ -51,10 +51,10 @@ from agents.dqn.dqn_agent import DQNAgent, DQNConfig
 # ============================================================================
 
 TRAINING_CONFIG = {
-    'max_episodes': 1000,  # Maximum training episodes
-    'min_episodes': 200,   # Minimum episodes before early stopping
+    'max_episodes': 2500,  # Maximum training episodes
+    'min_episodes': 400,   # Minimum episodes before early stopping
     'validation_freq': 50,  # Validate every N episodes
-    'patience': 7,          # Stop if no improvement for N validations (7 × 50 = 350 episodes)
+    'patience': 15,         # Stop if no improvement for N validations (15 × 50 = 750 episodes)
     'n_val_episodes': 5,    # Episodes per validation window
     'window_length': 100,   # Days per episode window (matches validation)
     'checkpoint_dir': Path('checkpoints/dqn_production'),

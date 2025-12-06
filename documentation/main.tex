@@ -1,0 +1,114 @@
+\documentclass[11pt,a4paper]{article}
+
+% ============================================================
+% PACKAGES
+% ============================================================
+
+% Page layout
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+
+% Math
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+
+% Graphics and tables
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{float}
+\usepackage{subcaption}
+
+% Algorithms
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+% Code listings (optional, for pseudocode)
+\usepackage{listings}
+
+% Hyperlinks and references
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{cleveref}
+
+% Bibliography
+\usepackage[numbers,sort&compress]{natbib}
+
+% Misc
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+% ============================================================
+% CUSTOM COMMANDS
+% ============================================================
+
+% Math operators
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator{\E}{\mathbb{E}}
+
+% Vectors and matrices
+\newcommand{\vect}[1]{\mathbf{#1}}
+\newcommand{\mat}[1]{\mathbf{#1}}
+
+% Common symbols
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+
+% State, action, reward
+\newcommand{\state}{\vect{s}}
+\newcommand{\action}{\vect{a}}
+\newcommand{\reward}{r}
+
+% ============================================================
+% DOCUMENT INFO
+% ============================================================
+
+\title{Deep Reinforcement Learning for Cryptocurrency Portfolio Management: \\
+A Comparative Study}
+
+\author{
+Jose Luis Marquez Jaramillo, Taylor Hawks \\
+EN.605.741 - Reinforcement Learning\\
+Johns Hopkins University 
+}
+
+\date{December 2025}
+
+% ============================================================
+% DOCUMENT
+% ============================================================
+
+\begin{document}
+
+\maketitle
+
+% ------------------------------------------------------------
+% ABSTRACT
+% ------------------------------------------------------------
+\input{sections/abstract}
+
+% ------------------------------------------------------------
+% MAIN SECTIONS
+% ------------------------------------------------------------
+\input{sections/introduction}
+\input{sections/related_work}
+\input{sections/methods}
+\input{sections/experiments}
+\input{sections/discussion}
+\input{sections/conclusion}
+
+% ------------------------------------------------------------
+% BIBLIOGRAPHY
+% ------------------------------------------------------------
+\bibliographystyle{plainnat}
+\bibliography{bibliography}
+
+% ------------------------------------------------------------
+% APPENDIX (optional)
+% ------------------------------------------------------------
+\appendix
+\input{sections/appendix}
+
+\end{document}

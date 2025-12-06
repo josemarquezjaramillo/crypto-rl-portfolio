@@ -333,12 +333,48 @@ This design uses the Template Method pattern: common training/evaluation logic i
 **Implementation Status:** Base infrastructure complete (`agents/base_agent.py`, 633 lines). Concrete agents (LinUCB, DQN, REINFORCE) scheduled for Weeks 2-4.
 
 
-### 4.1 Policy-Gradient with Baseline (REINFORCE / A2C / PPO-style)
+### 4.1 Policy-Gradient with Baseline (REINFORCE)
 A policy network consumes the observation at time t — including the per-asset tensor X_t and the previous allocation vector w_{t−1} — and outputs unnormalized logits over the current tradable assets.
 
 We apply a mask so assets that are not tradable on day t (because of membership/cold-start rules) receive −∞ logit. We then apply a softmax over the masked logits to produce a continuous allocation w_t on the simplex. After that, we apply the turnover/concentration projection described above.
 
 This approach directly parameterizes the portfolio weights and is similar in spirit to the EIIE / PVM structure for crypto portfolio management [jiang2017eIIE] and to policy-gradient market-making work in crypto order books [sadighian2019mmppo]. The baseline / critic (A2C, PPO) provides variance reduction for the gradient estimate.
+
+**Implementation Details (Contributed by collaborator):**
+
+The REINFORCE agent (`agents/policy_grad/policygrad.py`, ~458 lines) implements policy gradient learning with the following architecture:
+
+*Canonical Asset Indexer* (`AssetIndexer` class):
+- Mirrors the `StateEncoder` canonical padding approach from DQN for consistency
+- Loads 37 unique assets from dataset, alphabetically sorted for determinism
+- Reindexes variable-size observations [A_t, 4, 60] to fixed canonical form [37, 60, 4]
+- Produces boolean mask [37] indicating which assets are tradable on each day
+- Transposes features from [channels, time] to [time, channels] for GRU compatibility
+
+*Policy Network* (`PolicyNet` class):
+- **Encoder**: GRU with input_size=4 (OHLCV features), hidden_size=32, batch_first=True
+- **Per-asset processing**: GRU processes each asset's 60-day sequence independently
+- **Context integration**: Concatenates final GRU hidden state [32] with previous weight [1] and no_previous_weights flag [1] → [34] features per asset
+- **Output head**: Linear(34→32) + ReLU + Linear(32→1) produces per-asset logits
+- **Allocation**: Softmax over masked logits produces portfolio weights on the simplex
+
+*Training Algorithm*:
+- **Policy gradient**: REINFORCE with episode-level returns as reward signal
+- **Action distribution**: Dirichlet distribution for stochastic portfolio weight sampling during training
+- **Exploration**: ε-greedy schedule (1.0 → 0.05 over 500 episodes) to occasionally sample random allocations
+- **Optimizer**: Adam with learning rate 1e-4
+- **Constraint handling**: Uses projection mode (`strict_projection=True`) where infeasible allocations are projected onto the feasible set by the environment
+
+*Production Training*:
+- Trained for 10,000 episodes (~1.27M steps) using the same train_core sliding window methodology as DQN
+- Checkpoint stored at `checkpoints/reinforce_production/agent.pkl` (pickle format for full agent state including policy network, optimizer, and episode statistics)
+- Test performance: 166.98% return, 1.212 Sharpe ratio, 0.82% mean turnover
+
+*Key Differences from DQN*:
+- **Continuous action space**: Outputs portfolio weights directly rather than selecting discrete delta actions
+- **On-policy learning**: Updates policy using current episode's trajectory, no experience replay
+- **Lower turnover**: Achieves similar returns to Equal Weight baseline (168.50%) with only 0.82% turnover vs DQN's 10.88%
+- **Projection-based constraints**: Environment handles infeasible allocations silently, unlike DQN's penalty-based learning
 
 
 ### 4.2 Deep Q-Network (DQN)
@@ -439,6 +475,14 @@ This approach mirrors real portfolio management: some rebalancing moves are only
 
 *Device Handling*:
 The implementation properly handles CPU/GPU device placement via `.to(device)` methods on both StateEncoder and QNetwork. Tensors are moved to the appropriate device during encoding and training.
+
+*Double DQN Variant*:
+
+Standard DQN tends to overestimate Q-values because the same network both selects and evaluates actions in the Bellman target: $Q_{target} = r + \gamma \max_{a'} Q_{target}(s', a')$. This maximization bias accumulates over training, potentially leading to suboptimal policies. Double DQN (DDQN), introduced by van Hasselt et al. (2015), addresses this by decoupling action selection from action evaluation [vanhasselt2015ddqn].
+
+In our implementation, DDQN is enabled via the `use_double_dqn` configuration flag. When active, the TD target computation changes: the online Q-network selects the best action for the next state ($a^* = \arg\max_{a'} Q_{online}(s', a')$), while the target network evaluates that action ($Q_{target}(s', a^*)$). This decoupling reduces overestimation because the target network's Q-values are not used for action selection, breaking the positive feedback loop that inflates values in standard DQN.
+
+The DDQN variant was trained separately from standard DQN, producing an independent checkpoint at `checkpoints/ddqn_production/best`. Both variants share the same architecture (StateEncoder, QNetwork, delta action catalog) and training infrastructure, differing only in the TD target computation. During final evaluation, both DQN and DDQN agents are compared against baselines to assess whether the reduced overestimation bias translates to improved portfolio performance.
 
 *Validation and Empirical Findings* (`agents/dqn/smoke_test.py`):
 
@@ -563,7 +607,7 @@ After identifying the best hyperparameters via Optuna, production training proce
 
 This methodology represents a significant advancement over manual grid search, enabling systematic exploration of the high-dimensional hyperparameter space while automatically identifying and pruning underperforming configurations.
 
-Despite the Q-value instability observed with gamma=0.99 in preliminary tests, the smoke test successfully validates the core DQN infrastructure: the delta-based action catalog provides a rich, context-aware action space (70 rebalancing operators), the canonical padding StateEncoder preserves asset identity for context-dependent feasibility learning, and the penalty-based constraint mechanism provides explicit feedback for learning safe actions. With systematic hyperparameter tuning (Week 4), the implementation is ready for production training experiments to compare against baseline strategies (uniform portfolio, market-cap weighted, momentum-based rebalancing).
+Despite the Q-value instability observed with gamma=0.99 in preliminary tests, the smoke test successfully validates the core DQN infrastructure: the delta-based action catalog provides a rich, context-aware action space (70 rebalancing operators), the canonical padding StateEncoder preserves asset identity for context-dependent feasibility learning, and the penalty-based constraint mechanism provides explicit feedback for learning safe actions. Production training experiments compare DQN and DDQN against baseline strategies (equal weight, market-cap weighted, mean-variance optimization) to assess whether deep RL provides meaningful improvements over classical portfolio allocation.
 
 **DeltaActionCatalog API Reference:**
 
@@ -602,29 +646,42 @@ This formulation aligns with "bandit networks" for portfolio selection under non
 
 The contextual bandit does not explicitly optimize long-horizon value functions. Instead, it treats each day's allocation choice as an immediate reward maximization problem, which can be a strong baseline in highly nonstationary markets.
 
-**Agent Implementation Status and Timeline:**
+**Agent Implementation Status (Final):**
 
-As of November 21, 2025, the project has completed Week 3 of development with the following agent implementation status:
+The project completed development with three reinforcement learning agents (DQN, DDQN, REINFORCE) and three baseline strategies (Equal Weight, Market Cap, Mean-Variance). The original proposal included LinUCB (contextual bandit), which was not implemented due to time constraints.
 
-- **BaseAgent Infrastructure** (Week 1, Complete): Abstract base class, metrics tracking, episode management, logging, and checkpointing infrastructure implemented and tested (`agents/base_agent.py`, 634 lines). Provides common training/evaluation loops and portfolio-specific metrics (Sharpe ratio, max drawdown, turnover, transaction costs) for all agent types. Design follows Stable-Baselines3 patterns adapted for variable universe sizes and financial constraints.
+The BaseAgent infrastructure (`agents/base_agent.py`, 634 lines) provides abstract base classes, metrics tracking, episode management, logging, and checkpointing for all agent types. This design follows Stable-Baselines3 patterns adapted for variable universe sizes and financial constraints, ensuring consistent training loops and portfolio-specific metrics (Sharpe ratio, max drawdown, turnover, transaction costs) across all implementations.
 
-- **DQNAgent** (Week 3, Complete with hyperparameter tuning in progress): Fully implemented with delta-based action catalog (70 actions), canonical padding StateEncoder, experience replay, target networks, and penalty-based constraint learning (`agents/dqn/`, 5 modules, ~1,200 lines). Smoke testing validates core functionality and identifies gamma (discount factor) as a critical hyperparameter requiring empirical tuning. **Ready for production training with systematic gamma exploration (Week 4).** Implementation successfully demonstrates context-dependent feasibility learning through penalty feedback, with constraint violation rate decreasing from 16.3% initial to expected <1% at convergence.
+The DQN agent was fully implemented with the delta-based action catalog (70 actions), canonical padding StateEncoder, experience replay, target networks, and penalty-based constraint learning (`agents/dqn/`, 5 modules, ~1,200 lines). Production training ran for 400 episodes using 100-day sliding windows sampled from train_core (2018-2022). The DDQN variant, sharing identical architecture but using decoupled action selection and evaluation, was trained for 300 episodes. Both production checkpoints are stored at `checkpoints/dqn_production/best` and `checkpoints/ddqn_production/best`.
 
-- **LinUCBAgent** (Week 2, Not Implemented): Contextual linear bandit with Upper Confidence Bound exploration, originally scheduled for November 4-10, has been deferred. The LinUCB agent would treat each discrete portfolio strategy (from the legacy 48-strategy catalog) as an arm, maintaining uncertainty estimates for arm rewards conditioned on market state features. Implementation would follow [huo2017riskbandit] for risk-aware bandit portfolio selection. The deferral allows focus on resolving DQN hyperparameter issues and does not block Week 5 evaluation, as DQN vs. baseline comparisons (uniform, market-cap weighted) provide sufficient empirical analysis.
+The REINFORCE agent was contributed by a collaborator, implementing policy gradient learning with a GRU-based policy network (`agents/policy_grad/`, 2 modules, ~458 lines). The agent uses canonical asset indexing (same 37-asset registry as DQN) and outputs continuous portfolio weights via Dirichlet sampling. Production training ran for 10,000 episodes, with the checkpoint stored at `checkpoints/reinforce_production/agent.pkl`.
 
-- **REINFORCEAgent** (Week 4, Not Implemented): Policy gradient agent with baseline, originally scheduled for November 18-24, has been deferred. The REINFORCE agent would use a policy network to output continuous portfolio weights, with the environment's projection-mode constraint handling ensuring feasibility. Implementation would follow [jiang2017eIIE] EIIE architecture: convolutional layers for per-asset feature extraction, portfolio memory mechanism for previous weights, and softmax output layer for allocation. The deferral reflects prioritization of DQN debugging and enables deeper analysis of value-based methods for portfolio management.
+The combination of value-based (DQN, DDQN) and policy gradient (REINFORCE) methods provides complementary perspectives on the portfolio optimization problem. DQN explores discrete delta-based rebalancing strategies with penalty-based constraint learning, while REINFORCE learns continuous allocation policies with projection-based constraints. This diversity enables comparative analysis of different RL paradigms for financial applications.
 
-**Rationale for Implementation Prioritization:**
+**Rationale for Implementation Choices:**
 
-The decision to complete DQN implementation before LinUCB and REINFORCE stems from three methodological considerations. First, DQN's delta-based action space represents a novel contribution relative to existing crypto portfolio RL literature, which predominantly uses continuous actions [jiang2017eIIE, ye2020sarl] or fixed strategies [fonseca2024banditnets]. Thoroughly validating this design requires careful empirical analysis, including hyperparameter sensitivity studies and ablation experiments comparing delta actions to fixed strategies. Second, the canonical padding StateEncoder addresses a fundamental challenge in value-based RL for portfolio management (preserving asset identity under variable universe sizes) that has not been extensively studied in prior work [lucarelli2020dqlcrypto use fixed universe]. Demonstrating that canonical padding successfully enables context-dependent feasibility learning provides methodological insights for future research. Third, the penalty-based constraint enforcement mechanism requires careful tuning of the constraint penalty magnitude and verification that violation rates converge to acceptable levels (<1%)—empirical questions that cannot be answered without extended training runs.
+The final agent roster (DQN, DDQN, REINFORCE) enables comparison across two distinct RL paradigms:
 
-Given these considerations and time constraints (Week 5 final evaluation), completing robust DQN experiments with corrected hyperparameters provides more scientific value than implementing three partial agents. The project will compare DQN against strong baselines (uniform allocation, market-cap weighted, momentum-based rebalancing) to assess whether deep RL provides meaningful improvements over simple heuristics in crypto portfolio management—a central question motivating this research [jiang2016drlt].
+1. **Value-based methods (DQN, DDQN)**: Learn Q-values over discrete delta actions with penalty-based constraint enforcement. The novel delta-based action space represents a contribution relative to existing crypto portfolio RL literature, which predominantly uses continuous actions [jiang2017eIIE, ye2020sarl] or fixed strategies [fonseca2024banditnets]. The canonical padding StateEncoder addresses variable universe sizes while preserving asset identity for context-dependent feasibility learning.
 
-**Revised Week 4-5 Plan:**  
-- Week 4 (Nov 18-24): DQN hyperparameter tuning with Optuna Bayesian optimization (50 trials × 50 episodes on validation windows only, 8-hyperparameter space including gamma, learning rate, batch size, buffer size, epsilon decay, target update frequency, hidden dimensions), parallel execution with 15 workers (~10-14 hours), production training with best configuration using 100-day sliding window sampling from train_core (500 episodes with validation-based early stopping, patience=5, validate every 50 episodes, ~27.5 hours), learning curve analysis  
-- Week 5 (Nov 25-Dec 1): Final evaluation on test period (2024-2025), baseline comparisons (uniform allocation, market-cap weighted, momentum-based rebalancing), regime-specific performance analysis, comprehensive metrics evaluation (Sharpe ratio, Sortino ratio, max drawdown, win rate), technical report writing
+2. **Policy gradient methods (REINFORCE)**: Directly parameterize portfolio weights as continuous outputs with projection-based constraint handling. This approach is more aligned with classical portfolio optimization and the EIIE architecture [jiang2017eIIE], providing a baseline for the policy gradient paradigm.
 
-Each concrete agent will implement the 4 abstract methods (`select_action`, `update`, `save`, `load`) and optionally override hooks (`on_episode_start`, `on_episode_end`) or logging columns (`get_agent_log_columns`) as needed. The common `BaseAgent` infrastructure handles all training loop mechanics, metrics aggregation, and logging.
+The original proposal included LinUCB (contextual bandit), which was not implemented due to time constraints. However, the current agent roster provides sufficient diversity to address the central research question: whether deep RL provides meaningful improvements over simple heuristics in crypto portfolio management [jiang2016drlt]. The three baselines (Equal Weight, Market Cap, Mean-Variance) represent increasing levels of sophistication in classical portfolio allocation, enabling nuanced performance comparisons.
+
+Each concrete agent implements the four abstract methods required by `BaseAgent` (`select_action`, `update`, `save`, `load`) and optionally overrides hooks for episode management. The common infrastructure handles training loops, metrics aggregation, and logging.
+
+
+### 4.4 Baseline Strategies
+
+To assess whether reinforcement learning provides meaningful improvements over classical portfolio allocation methods, we implement three baseline strategies that operate under identical constraints (transaction costs, turnover limits, concentration caps). All baselines use the `BaselineAgent` interface (`baselines/base_baseline.py`), which mirrors the `BaseAgent` API to enable consistent evaluation across all strategies.
+
+The Equal Weight baseline (`baselines/equal_weight.py`) implements the classic 1/N allocation strategy, distributing portfolio weight uniformly across all tradable assets. Despite its simplicity, equal weighting has proven remarkably competitive against more sophisticated strategies in empirical studies, as it avoids estimation error in expected returns and covariances [demiguel2009optimal]. The strategy rebalances to equal weights at each decision step, with actual execution subject to transaction costs and turnover limits.
+
+The Market Cap Weight baseline (`baselines/market_cap_weight.py`) allocates weights proportional to market capitalization, mimicking passive index-tracking strategies common in traditional finance. Market cap weighting has the advantage of minimal turnover (weights adjust automatically as prices change), though it tends to concentrate portfolios in the largest assets. The implementation supports optional square-root weighting for reduced concentration and monthly rebalancing schedules that align with index reconstitution.
+
+The Mean-Variance Optimization baseline (`baselines/mean_variance.py`) implements Markowitz portfolio optimization using historical returns estimated from the 60-day observation window. The strategy solves a constrained quadratic program to find weights that balance expected return against portfolio variance. To address the well-known instability of sample covariance estimation, the implementation uses Ledoit-Wolf shrinkage toward a diagonal covariance matrix. When optimization fails (typically due to numerical issues with near-singular covariance matrices), the strategy falls back to equal weighting. This baseline represents classical quantitative portfolio management and provides a benchmark for whether RL can learn return predictions that outperform simple historical estimators.
+
+All three baselines share the same constraints as RL agents (long-only, fully invested, per-asset concentration caps, turnover limits) and incur identical transaction costs, ensuring fair comparison. The baselines serve both as performance benchmarks and as ablation tests: if DQN cannot outperform equal weighting, the added complexity of deep RL may not be justified for this application.
 
 
 ---
@@ -830,11 +887,64 @@ The environment supports optional CSV logging via the `log_dir` parameter in `En
 Log files are named with the pattern `env_{split}_{seed}_{timestamp}.csv` and are automatically flushed to disk every 10 steps and on environment close. This facilitates post-hoc analysis, hyperparameter debugging, and ablation studies without requiring custom logging code in each agent implementation.
 
 
+### 7.5 Evaluation Module Architecture
+
+The `evaluation/` module provides a comprehensive framework for running reproducible evaluations and generating publication-ready outputs. The module follows a layered architecture: data structures define evaluation artifacts, the `Evaluator` class orchestrates multi-agent comparison, specialized modules compute metrics and generate visualizations, and a CLI entry point enables scripted evaluation runs.
+
+The core data structures capture evaluation results at different granularities. `AgentResult` stores summary metrics from a single agent run (one seed, one window), including profitability metrics (cumulative return, CAGR), risk metrics (Sharpe, Sortino, max drawdown, Calmar), and efficiency metrics (hit rate, turnover, transaction costs). `DetailedAgentResult` extends this with full time-series data—daily portfolio values, returns, weights, turnovers, and costs—enabling detailed visualizations of performance evolution. `AggregatedResult` summarizes multiple runs with means, standard deviations, and 95% confidence intervals for statistically robust comparisons.
+
+The `Evaluator` class (`evaluation/evaluator.py`, ~1,000 lines) orchestrates multi-agent evaluation with configurable seeds and windows. It maintains registries of baseline and RL agents, each with factory functions that instantiate agents with appropriate configurations. The `run_evaluation()` method executes all registered agents across specified seeds, collecting results in a structured format suitable for aggregation and visualization. The `run_detailed_evaluation()` variant collects per-step data for time-series visualizations. Agent factories handle checkpoint loading for RL agents (DQN/DDQN via `torch.load()`, REINFORCE via `pickle.load()`) and configuration for baselines, abstracting initialization complexity from the evaluation pipeline.
+
+The evaluation pipeline supports all six agents:
+- **Baselines**: Equal Weight, Market Cap Weight, Mean-Variance Optimization
+- **RL Agents**: DQN (`create_dqn_agent`), DDQN (`create_ddqn_agent`), REINFORCE (`create_reinforce_agent`)
+
+Each factory function loads the appropriate checkpoint and configures the agent for evaluation mode (deterministic action selection, no exploration). The REINFORCE factory uses pickle deserialization to restore the full `PolicyGradAgent` instance including its `PolicyNet` weights, optimizer state, and training history.
+
+The metrics module (`evaluation/metrics.py`, ~635 lines) provides pure functions for computing standard portfolio performance metrics following academic finance conventions. Functions include `compute_cagr()` for annualized returns, `compute_sharpe_ratio()` and `compute_sortino_ratio()` for risk-adjusted returns (the latter penalizing only downside volatility), `compute_max_drawdown()` for worst peak-to-trough decline, and `compute_calmar_ratio()` combining return and drawdown. The module also provides `compute_confidence_interval()` for bootstrap-based statistical inference. All functions operate on numpy arrays and are stateless, enabling efficient computation over multiple runs.
+
+The visualizer module (`evaluation/visualizer.py`, ~1,350 lines) generates publication-ready charts following the visual style of Jiang (2017) and Lucarelli (2020). Core functions include `plot_cumulative_returns_comparison()` for multi-strategy equity curves with drawdown subplots, `plot_rolling_sharpe()` for time-varying risk-adjusted performance, `plot_daily_returns_distribution()` for return histograms with summary statistics, and `plot_allocation_evolution()` for stacked area charts showing portfolio composition over time. The module uses matplotlib with customized styling (seaborn-v0_8-whitegrid) and supports saving figures in multiple formats. A `StrategyTimeSeries` dataclass standardizes the input format across visualization functions.
+
+The tables module (`evaluation/tables.py`) generates formatted tables for inclusion in technical reports. `generate_latex_table()` produces publication-ready LaTeX with proper formatting (bold best values, consistent decimal places), while `generate_markdown_table()` creates documentation-friendly output. Both support confidence intervals and per-window breakdowns.
+
+The CLI entry point (`evaluation/run_full_evaluation.py`) provides a complete evaluation pipeline accessible from the command line. The `--split` argument selects validation or test data, `--seeds` controls statistical robustness, and `--detailed` enables time-series collection for visualization. The `--save-latex` flag generates publication-ready tables. The pipeline loads the frozen dataset, registers all available agents (both baselines and RL), runs evaluation, generates visualizations, and saves results in structured directories (`results/visualizations/`, `results/tables/`).
+
+
+### 7.6 Final Test Results
+
+The final out-of-sample evaluation was conducted on the test period (2024-01-01 → 2025-10-31, 646 trading days) with all six agents. Results are summarized below:
+
+| Agent | Return (%) | CAGR (%) | Sharpe | Sortino | Max DD (%) | Turnover (%) |
+|:------|----------:|--------:|-------:|--------:|----------:|-----------:|
+| **Mean-Variance** | **366.54** | **139.07** | **1.640** | **1.691** | **39.96** | 13.50 |
+| Equal Weight | 168.50 | 74.88 | 1.217 | 1.250 | 48.87 | **0.25** |
+| REINFORCE | 166.98 | 74.32 | 1.212 | 1.247 | 48.72 | 0.82 |
+| Market Cap | 159.30 | 71.46 | 1.240 | 1.298 | 44.17 | 0.34 |
+| DQN | 155.47 | 70.03 | 1.146 | 1.175 | 52.59 | 10.88 |
+| DDQN | 144.50 | 65.85 | 1.135 | 1.157 | 52.56 | 8.39 |
+
+**Key Findings:**
+
+1. **Mean-Variance dominates**: The classical Markowitz optimization baseline achieved the highest returns (366.54%) and best risk-adjusted metrics (Sharpe 1.640), outperforming all RL agents. This suggests that during the test period (2024-2025), simple historical return/covariance estimation provided useful predictive signal.
+
+2. **REINFORCE matches Equal Weight**: The policy gradient agent achieved nearly identical performance to the Equal Weight baseline (166.98% vs 168.50% return, 1.212 vs 1.217 Sharpe), but with slightly lower turnover (0.82% vs 0.25%). This indicates the policy learned to approximate a passive strategy, avoiding costly rebalancing.
+
+3. **Value-based RL underperforms**: Both DQN (155.47%) and DDQN (144.50%) underperformed simple baselines despite their sophisticated architectures. The higher turnover (10.88% and 8.39%) suggests the delta-based action space encouraged excessive rebalancing that transaction costs penalized.
+
+4. **DDQN vs DQN**: Contrary to expectations, DDQN performed worse than standard DQN on this test period. The reduced Q-value overestimation did not translate to improved portfolio performance, possibly because the action space is discrete and the advantage of accurate Q-values is limited.
+
+5. **Turnover-return tradeoff**: Lower turnover strategies (Equal Weight: 0.25%, REINFORCE: 0.82%) achieved comparable or better returns than high-turnover strategies (DQN: 10.88%, Mean-Variance: 13.50%), with Mean-Variance being the notable exception where active rebalancing paid off.
+
+**Implications:**
+
+These results highlight the challenge of outperforming simple heuristics in financial applications—a common finding in the portfolio optimization literature [demiguel2009optimal]. The Mean-Variance baseline's strong performance suggests that estimation error in RL-based return prediction may be higher than classical statistical estimation during the test period's relatively trending markets. The REINFORCE agent's convergence toward equal-weight-like behavior indicates successful learning of a low-turnover strategy, while the DQN agents' underperformance despite complex architecture warrants further investigation into the delta action space design and hyperparameter sensitivity.
+
+
 ---
 ## 8. Why This Setup is Defensible
 
 1. No look-ahead leakage.  
-   The agent’s observation at t includes only data available by the end of day t. The forward return vector for day t→t+1 is stored separately (`fwd_returns[t]`) and is only used after the action to compute reward. This matches best practice in portfolio RL [jiang2017eIIE, lucarelli2020dqlcrypto].
+   The agent's observation at t includes only data available by the end of day t. The forward return vector for day t→t+1 is stored separately (`fwd_returns[t]`) and is only used after the action to compute reward. This matches best practice in portfolio RL [jiang2017eIIE, lucarelli2020dqlcrypto].
 
 2. Realistic constraints.  
    All agents must produce long-only, fully invested portfolios with no explicit cash sleeve, are penalized for turnover, and pay transaction costs. This prevents “cheating” via sitting in cash or overtrading and makes evaluation comparable to real crypto allocation and to baseline strategies [jiang2017eIIE, lucarelli2020dqlcrypto].
@@ -912,6 +1022,8 @@ This script serves as both a validation tool and living documentation for new us
 - [ye2020sarl] Ye, Y., Zhang, X., Zhang, L., Wang, H., & Wang, D. (2020). "State Augmented Reinforcement Learning for Portfolio Management." AAAI / arXiv:2002.05780.
 - [lucarelli2020dqlcrypto] Lucarelli, G., & Borrotti, M. (2020). "Deep Reinforcement Learning for Cryptocurrency Trading." Neural Computing and Applications.
 - [mnih2015dqn] Mnih, V., Kavukcuoglu, K., Silver, D., et al. (2015). "Human-level control through deep reinforcement learning." Nature.
+- [vanhasselt2015ddqn] van Hasselt, H., Guez, A., & Silver, D. (2016). "Deep Reinforcement Learning with Double Q-learning." AAAI.
+- [demiguel2009optimal] DeMiguel, V., Garlappi, L., & Uppal, R. (2009). "Optimal versus naive diversification: How inefficient is the 1/N portfolio strategy?" Review of Financial Studies, 22(5), 1915-1953.
 - [huo2017riskbandit] Huo, H., & Fu, M. C. (2017). "Risk-aware multi-armed bandit and portfolio selection." Royal Society Open Science, 4(1), 160641.
 - [fonseca2024banditnets] de Freitas Fonseca, P., et al. (2024). "Improving Portfolio Optimization Results with Bandit Networks." arXiv:2410.04217.
 - [sadighian2019mmppo] Makridakis, J., et al. (2019). "Deep Reinforcement Learning for Cryptocurrency Market Making (A2C/PPO)." arXiv preprint.

@@ -1,0 +1,22 @@
+% ============================================================
+% ABSTRACT
+% ============================================================
+
+\begin{abstract}
+
+% BACKGROUND: What is the problem?
+Cryptocurrency markets present unique challenges for portfolio management due to their high volatility, 24/7 trading, and evolving asset universe.
+
+% OBJECTIVE: What did you do?
+We investigate the application of deep reinforcement learning (DRL) to dynamic cryptocurrency portfolio allocation, implementing and comparing three RL agents---Deep Q-Network (DQN), Double DQN (DDQN), and REINFORCE---against traditional baselines including Equal Weight, Market Cap Weight, and Mean-Variance Optimization.
+
+% METHODS: How did you do it?
+Our environment processes over seven years of historical data (2018--2025) for 37 cryptocurrencies, using a 60-day lookback window of OHLCV features. We design a discrete action space with 70 delta-based portfolio adjustments for value-based methods and a continuous simplex output for policy gradient methods, incorporating realistic constraints including transaction costs (0.1\%) and turnover limits (30\%).
+
+% RESULTS: What did you find?
+On a held-out test period (January 2024--October 2025), the Mean-Variance baseline achieved the highest cumulative return (366.54\%) and Sharpe ratio (1.64), followed by Equal Weight (168.50\%, Sharpe 1.22). Among RL agents, REINFORCE performed best (166.98\%, Sharpe 1.21), with DQN (155.47\%) and DDQN (144.50\%) trailing behind.
+
+% CONCLUSIONS: What does it mean?
+Our results suggest that in the tested market regime, classical optimization methods outperformed learned policies, highlighting challenges in sample efficiency and generalization for DRL in financial applications. We discuss implications for future research directions.
+
+\end{abstract}

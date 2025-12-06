@@ -38,6 +38,11 @@ from evaluation.evaluator import (
     run_single_evaluation,
     run_detailed_evaluation,
     aggregate_results,
+    create_equal_weight_agent,
+    create_market_cap_agent,
+    create_mean_variance_agent,
+    create_dqn_agent,
+    create_reinforce_agent,
 )
 
 from evaluation.metrics import (

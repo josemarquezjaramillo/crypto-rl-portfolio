@@ -46,6 +46,7 @@ from baselines.mean_variance import MeanVarianceAgent, MeanVarianceConfig
 
 # RL Agents
 from agents.dqn.dqn_agent import DQNAgent, DQNConfig
+from agents.policy_grad.policygrad import PolicyGradAgent, PolicyGradConfig
 
 
 # =============================================================================
@@ -311,6 +312,31 @@ def create_dqn_agent(seed: int, env: PortfolioEnv,
     agent = DQNAgent(config, env)
     agent.load(checkpoint_path)
     agent.epsilon = 0.0  # Deterministic evaluation
+    return agent
+
+
+def create_reinforce_agent(seed: int, env: PortfolioEnv,
+                           checkpoint_path: Path,
+                           device: str = "cuda") -> PolicyGradAgent:
+    """
+    Factory for REINFORCE (Policy Gradient) agent.
+    
+    Loads a pre-trained PolicyGradAgent from a pickle checkpoint.
+    The agent uses a GRU-based policy network with Dirichlet output distribution
+    for continuous portfolio weight sampling.
+    """
+    import pickle
+    
+    with open(checkpoint_path / "agent.pkl", 'rb') as f:
+        agent = pickle.load(f)
+    
+    # Set to evaluation mode
+    agent.training = False
+    agent.epsilon = 0.0  # No exploration during evaluation
+    
+    # Update environment reference (the saved env may have stale data)
+    agent.env = env
+    
     return agent
 
 

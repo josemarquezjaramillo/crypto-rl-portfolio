@@ -1,0 +1,56 @@
+% ============================================================
+% RELATED WORK
+% ============================================================
+
+\section{Related Work}
+\label{sec:related_work}
+
+We review prior work in four areas: deep reinforcement learning for portfolio management, value-based and policy gradient methods, traditional portfolio optimization, and the unique characteristics of cryptocurrency markets that motivate our design choices.
+
+% ------------------------------------------------------------
+\subsection{Deep Reinforcement Learning for Portfolio Management}
+\label{subsec:drl_portfolio}
+% ------------------------------------------------------------
+
+The application of deep reinforcement learning to portfolio management was pioneered by \citet{jiang2016drlt}, who introduced the Ensemble of Identical Independent Evaluators (EIIE) framework for cryptocurrency trading. This architecture processes each asset's price history through identical neural network modules, producing allocation scores that are normalized via softmax to obtain portfolio weights. The follow-up work \cite{jiang2017eIIE} extended this framework with the Portfolio Vector Memory (PVM), which feeds the previous portfolio weights back into the policy network. This recurrent structure helps the agent internalize transaction costs by learning to avoid unnecessary rebalancing.
+
+\citet{ye2020sarl} proposed State-Augmented Reinforcement Learning (SARL), which enriches the observation space with market-wide indicators such as index returns and volatility measures. By conditioning on broader market context, SARL agents can potentially adapt their strategies to different market regimes. The authors demonstrated improved performance on Chinese stock markets compared to baseline methods.
+
+\citet{lucarelli2020dqlcrypto} applied Deep Q-Learning to cryptocurrency trading, exploring discrete action spaces where each action corresponds to a complete portfolio allocation. Their work highlighted the challenges of applying DQN to portfolio management, including the need for careful reward shaping and the difficulty of learning in highly non-stationary financial environments.
+
+\paragraph{Limitations of prior DRL approaches.} Despite promising backtested results, several limitations persist across this literature. First, most studies assume a fixed asset universe throughout training and evaluation, which does not reflect the reality of cryptocurrency markets where tokens are frequently listed and delisted. Second, evaluation periods are often short or overlap with training data, making it difficult to assess true generalization. Third, comparison against traditional baselines is frequently limited to buy-and-hold strategies, which can underperform in trending markets and provide limited insight into whether DRL adds value over established portfolio optimization methods. Our work addresses these gaps by explicitly modeling variable universes, using strict train/test separation, and benchmarking against strong traditional methods.
+
+% ------------------------------------------------------------
+\subsection{Value-Based and Policy Gradient Methods}
+\label{subsec:rl_methods}
+% ------------------------------------------------------------
+
+\paragraph{Value-based methods.} Deep Q-Networks (DQN), introduced by \citet{mnih2015dqn}, demonstrated that combining Q-learning with deep neural networks and experience replay could achieve human-level performance on Atari games. The key innovations---experience replay for breaking temporal correlations and target networks for stabilizing updates---have become standard components in value-based RL. However, standard DQN suffers from overestimation bias: because the same network both selects and evaluates actions in the Bellman target, Q-values tend to be inflated. \citet{vanHasselt2016ddqn} addressed this with Double DQN (DDQN), which decouples action selection from action evaluation, significantly reducing overestimation.
+
+Applying DQN to portfolio management requires discretizing the action space. \citet{gao2020dqnportfolio} used fixed allocation templates (e.g., ``60\% stocks, 40\% bonds''), but this approach scales poorly with universe size and cannot express fine-grained allocation adjustments. Our delta-based action catalog addresses this by defining actions as relative portfolio changes rather than absolute allocations, enabling smooth transitions through portfolio space.
+
+\paragraph{Policy gradient methods.} REINFORCE \cite{williams1992reinforce}, the foundational policy gradient algorithm, updates policy parameters using the gradient of expected returns weighted by episode rewards. While high-variance, REINFORCE naturally handles continuous action spaces and has been applied to portfolio management where portfolio weights are treated as continuous policy outputs. The policy gradient theorem \cite{sutton1999policy} established that gradient estimates can be computed from sampled trajectories, enabling scalable optimization.
+
+Actor-critic methods, which combine policy gradients with learned value function baselines, reduce variance and have been applied to financial trading \cite{sadighian2019mmppo}. However, these methods remain sensitive to hyperparameters and can converge to suboptimal local optima in complex reward landscapes. The EIIE framework \cite{jiang2017eIIE} can be viewed as a policy gradient approach where the softmax output layer naturally satisfies the simplex constraint. Our REINFORCE implementation follows this paradigm, using Dirichlet sampling for exploration.
+
+% ------------------------------------------------------------
+\subsection{Traditional Portfolio Optimization}
+\label{subsec:traditional}
+% ------------------------------------------------------------
+
+Mean-variance optimization, introduced by \citet{markowitz1952portfolio}, remains the foundation of quantitative portfolio management. The framework selects portfolio weights to maximize expected return for a given level of variance, or equivalently, minimize variance for a target return. However, mean-variance optimization is highly sensitive to estimation error in expected returns and covariances.
+
+\citet{demiguel2009optimal} compared fourteen portfolio strategies across multiple datasets, finding that the simple equal-weight (1/N) portfolio frequently outperformed optimized strategies out-of-sample. Their analysis attributed this to estimation error: the benefits of optimization are overwhelmed by the noise in estimated parameters, particularly expected returns. This result established equal weighting as a baseline that optimized strategies often fail to beat.
+
+To improve robustness, practitioners employ shrinkage estimators for covariance matrices. \citet{ledoit2004honey} proposed shrinking the sample covariance toward a structured target (e.g., diagonal or constant correlation), reducing estimation error at the cost of some bias. Our mean-variance baseline implements Ledoit-Wolf shrinkage, representing a reasonable best-effort classical approach.
+
+\paragraph{Challenges for traditional methods in cryptocurrency markets.} While mean-variance optimization has been extensively studied for equity portfolios, cryptocurrency markets present additional challenges. Return distributions exhibit heavy tails and time-varying volatility that violate the Gaussian assumptions underlying mean-variance theory \cite{bergsli2022volatility, naimy2021garch}. Cross-asset correlations shift substantially between bull and bear market regimes \cite{james2022correlations}, meaning covariance estimates from calm periods may be misleading during crises. Furthermore, the short history of most cryptocurrencies limits the statistical reliability of parameter estimates. These characteristics motivate exploring whether data-driven RL methods can learn more adaptive allocation strategies.
+
+% ------------------------------------------------------------
+\subsection{Positioning of This Work}
+\label{subsec:positioning}
+% ------------------------------------------------------------
+
+Our work extends prior DRL portfolio research by addressing three key gaps. First, unlike EIIE \cite{jiang2017eIIE} and SARL \cite{ye2020sarl}, we explicitly model variable asset universes with monthly reconstitution and eligibility rules. Second, our delta-based action catalog enables smooth portfolio transitions while maintaining a tractable discrete action space for value-based learning. Third, our canonical padding state encoder preserves asset identity information essential for evaluating delta actions.
+
+We contribute to the broader discussion about the practical value of DRL for portfolio management. While prior work has often reported positive results in backtesting, our out-of-sample evaluation over 646 days finds that traditional mean-variance optimization outperformed all DRL agents. This result suggests that the sample complexity of current DRL methods may exceed what is feasible with typical financial datasets, and that simple, estimation-efficient methods like equal weighting remain strong baselines \cite{demiguel2009optimal}.

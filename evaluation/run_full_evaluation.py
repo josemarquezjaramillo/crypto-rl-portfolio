@@ -46,6 +46,7 @@ from evaluation.evaluator import (
     create_market_cap_agent,
     create_mean_variance_agent,
     create_dqn_agent,
+    create_reinforce_agent,
     run_detailed_evaluation,
 )
 from evaluation.visualizer import (
@@ -100,6 +101,16 @@ def setup_evaluator(config: EvaluationConfig) -> Evaluator:
         print(f"  ✓ Registered DDQN agent (checkpoint: {ddqn_path})")
     else:
         print(f"  ✗ DDQN checkpoint not found: {ddqn_path}")
+    
+    # Register REINFORCE agent
+    reinforce_path = Path("checkpoints/reinforce_production")
+    if (reinforce_path / "agent.pkl").exists():
+        evaluator.register_rl_agent("REINFORCE",
+            lambda seed, env, cp, dev: create_reinforce_agent(seed, env, cp, dev),
+            reinforce_path)
+        print(f"  ✓ Registered REINFORCE agent (checkpoint: {reinforce_path})")
+    else:
+        print(f"  ✗ REINFORCE checkpoint not found: {reinforce_path}/agent.pkl")
     
     return evaluator
 
@@ -303,9 +314,10 @@ def create_timeseries_visualizations(
     if len(strategies_with_weights) >= 2:
         try:
             fig = plot_multi_agent_allocation_comparison(
-                strategies_with_weights[:4],  # Limit to 4 for layout
+                strategies_with_weights[:6],  # Show up to 6 agents (3 baselines + 3 RL)
                 top_n=8,
                 title=f'Allocation Strategies Comparison ({split.upper()} Set)',
+                figsize=(18, 12),  # Larger figure for 6 subplots
             )
             fig.savefig(viz_dir / f'allocation_comparison_{timestamp}.png', dpi=300, bbox_inches='tight')
             plt.close(fig)

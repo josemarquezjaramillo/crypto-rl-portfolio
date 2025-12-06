@@ -1211,7 +1211,8 @@ def plot_multi_agent_allocation_comparison(
     Plot allocation evolution for multiple agents as stacked area subplots.
     
     Creates a grid of subplots, one per agent, allowing visual comparison
-    of allocation strategies.
+    of allocation strategies. Uses a GLOBAL color mapping so each asset
+    has the same color across all subplots for accurate comparison.
     
     Parameters
     ----------
@@ -1229,6 +1230,26 @@ def plot_multi_agent_allocation_comparison(
     plt.Figure
         Matplotlib figure object
     """
+    # STEP 1: Compute GLOBAL asset ordering across ALL strategies
+    # This ensures consistent colors/labels across all subplots
+    global_asset_totals = {}
+    for strat in strategies:
+        for weights_dict in strat.weights_history:
+            for asset, weight in weights_dict.items():
+                global_asset_totals[asset] = global_asset_totals.get(asset, 0.0) + weight
+    
+    # Sort by total weight across all strategies
+    global_sorted_assets = sorted(global_asset_totals.keys(),
+                                   key=lambda x: global_asset_totals[x], reverse=True)
+    
+    # Top N assets globally + "Other" category
+    global_top_assets = global_sorted_assets[:top_n]
+    global_other_assets = set(global_sorted_assets[top_n:]) if len(global_sorted_assets) > top_n else set()
+    
+    # Create a FIXED color mapping for all assets
+    all_labels = global_top_assets + (['Other'] if global_other_assets else [])
+    color_map = {label: plt.cm.tab20(i / len(all_labels)) for i, label in enumerate(all_labels)}
+    
     n_agents = len(strategies)
     n_cols = min(2, n_agents)
     n_rows = (n_agents + n_cols - 1) // n_cols
@@ -1239,35 +1260,20 @@ def plot_multi_agent_allocation_comparison(
     for idx, strat in enumerate(strategies):
         ax = axes[idx]
         
-        # Collect all assets
-        all_assets = set()
-        for weights_dict in strat.weights_history:
-            all_assets.update(weights_dict.keys())
-        
-        asset_avg_weights = {}
-        for asset in all_assets:
-            weights = [w.get(asset, 0.0) for w in strat.weights_history]
-            asset_avg_weights[asset] = np.mean(weights)
-        
-        sorted_assets = sorted(asset_avg_weights.keys(), 
-                              key=lambda x: asset_avg_weights[x], reverse=True)
-        
-        top_assets = sorted_assets[:top_n]
-        other_assets = sorted_assets[top_n:] if len(sorted_assets) > top_n else []
-        
-        # Build data
+        # Build data using the GLOBAL asset ordering
         steps = np.arange(len(strat.weights_history))
         data = {}
         
-        for asset in top_assets:
+        for asset in global_top_assets:
             data[asset] = [w.get(asset, 0.0) for w in strat.weights_history]
         
-        if other_assets:
-            data['Other'] = [sum(w.get(a, 0.0) for a in other_assets) 
+        if global_other_assets:
+            data['Other'] = [sum(w.get(a, 0.0) for a in global_other_assets) 
                            for w in strat.weights_history]
         
-        df = pd.DataFrame(data, index=steps)
-        colors = plt.cm.tab20(np.linspace(0, 1, len(df.columns)))
+        # Use fixed column order to match color_map
+        df = pd.DataFrame(data, index=steps)[all_labels]
+        colors = [color_map[col] for col in df.columns]
         
         df.plot.area(ax=ax, stacked=True, alpha=0.8, color=colors, legend=False)
         
@@ -1282,9 +1288,10 @@ def plot_multi_agent_allocation_comparison(
     for idx in range(len(strategies), len(axes)):
         axes[idx].set_visible(False)
     
-    # Add legend to last visible axis
-    handles, labels = axes[len(strategies) - 1].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='center right', bbox_to_anchor=(1.12, 0.5), fontsize=9)
+    # Create legend using the global color mapping
+    from matplotlib.patches import Patch
+    legend_handles = [Patch(facecolor=color_map[label], alpha=0.8, label=label) for label in all_labels]
+    fig.legend(handles=legend_handles, loc='center right', bbox_to_anchor=(1.12, 0.5), fontsize=9)
     
     fig.suptitle(title, fontweight='bold', fontsize=14)
     plt.tight_layout()
