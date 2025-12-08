@@ -85,49 +85,69 @@ class ReinforceBaselineAgent(PolicyGradAgent):
     # Select action: compute both policy output + baseline V(s)
     # ------------------------------------------------------------
     def select_action(self, obs, deterministic: bool = False):
-        # Canonical state
-        features, prev_w, mask = self.asset_indexer.reindex(obs)
-
-        features = torch.tensor(features, dtype=torch.float32, device=self.device)
-        prev_w   = torch.tensor(prev_w,   dtype=torch.float32, device=self.device)
-        mask     = torch.tensor(mask,     dtype=torch.bool,    device=self.device)
-
-        first_step = self.episode_start
-
-        # POLICY FORWARD (full canonical → active subset)
-        logits_full = self.nn(features, prev_w, first_step)
-        logits = logits_full[mask]
-
-        # Episode now started
-        self.episode_start = False
-
-        # ---------- EPSILON-GREEDY ----------
-        if (not deterministic) and (self.rng.random() < self.epsilon):
-            self.last_logprob = None
-            self.last_value   = None
+            # -------- Canonical reindex --------
+            features, prev_w, mask = self.asset_indexer.reindex(obs)
+        
+            features = torch.tensor(features, dtype=torch.float32, device=self.device)
+            prev_w   = torch.tensor(prev_w,   dtype=torch.float32, device=self.device)
+            mask     = torch.tensor(mask,     dtype=torch.bool,    device=self.device)
+        
+            first_step = self.episode_start
+        
+            # -------- POLICY FORWARD --------
+            logits_full = self.nn(features, prev_w, first_step)
+            logits = logits_full[mask]   # active assets only
+        
+            # Episode officially started
+            self.episode_start = False
+        
+            # -------- EPSILON-GREEDY (training only) --------
+            # Never explore in deterministic mode
+            if (not deterministic) and (self.rng.random() < self.epsilon):
+                self.last_logprob = None
+                self.last_value   = None
+                self.det_step     = False
+                return self.random_policy(obs)
+        
+            # -------- DIRICHLET PARAMETERS --------
+            alpha = F.softplus(logits) + 1e-4
+            alpha_scaled = alpha / self.tau
+        
+            # mean-preserving normalization
+            A_t = logits.numel()
+            alpha_scaled = alpha_scaled * (A_t / alpha_scaled.sum())
+        
+            # ======================================================
+            # ==========  DETERMINISTIC EVALUATION BRANCH ==========
+            # ======================================================
+            if deterministic:
+                # Dirichlet mean = α_i / Σα
+                w_t = alpha_scaled / alpha_scaled.sum()
+        
+                # No log-probs, no value → no training impact
+                self.last_logprob = None
+                self.last_value   = None
+                self.det_step     = True
+        
+                return w_t.detach().cpu().numpy()
+        
+            # ======================================================
+            # ==========  STOCHASTIC TRAINING BRANCH ===============
+            # ======================================================
+            dist = Dirichlet(alpha_scaled)
+            w_t = dist.sample()
+            log_prob = dist.log_prob(w_t)
+        
+            # -------- BASELINE (value network) --------
+            v_t = self._compute_value(features, prev_w, first_step)
+        
+            # Store for REINFORCE update
+            self.last_logprob = log_prob
+            self.last_value   = v_t
             self.det_step     = False
-            return self.random_policy(obs)
+        
+            return w_t.detach().cpu().numpy()
 
-        # ---------- DIRICHLET ----------
-        alpha = F.softplus(logits) + 1e-4
-        alpha_scaled = alpha / self.tau
-
-        A_t = logits.numel()
-        alpha_scaled = alpha_scaled * (A_t / alpha_scaled.sum())
-
-        dist = Dirichlet(alpha_scaled)
-        w_t = dist.sample()
-        log_prob = dist.log_prob(w_t)
-
-        # ---------- BASELINE ----------
-        v_t = self._compute_value(features, prev_w, first_step)
-
-        # Store for update
-        self.last_logprob = log_prob
-        self.last_value   = v_t
-        self.det_step = False
-
-        return w_t.detach().cpu().numpy()
 
     # ------------------------------------------------------------
     # Store timestep information
