@@ -404,63 +404,63 @@ class PolicyGradAgent(BaseAgent):
     # ACTION SELECTION
     # =========================================================
     def select_action(self, obs, deterministic=False):
-    """
-    Masking is applied AFTER forward pass → critical fix.
-    """
-
-    # ---- Canonical reindex ----
-    features, prev_w, mask = self.asset_indexer.reindex(obs)
-
-    features = torch.tensor(features, dtype=torch.float32, device=self.device)
-    prev_w   = torch.tensor(prev_w,   dtype=torch.float32, device=self.device)
-    mask     = torch.tensor(mask,     dtype=torch.bool,    device=self.device)
-
-    # ---- Policy forward on FULL canonical set ----
-    logits_full = self.nn(features, prev_w, self.episode_start)
-    logits = logits_full[mask]            # select active assets
-    prev_w_active = prev_w[mask]
-
-    self.episode_start = False
-
-    # ---- EPSILON OVERRIDE (only applies when NOT deterministic) ----
-    if (not deterministic) and (self.rng.random() < self.epsilon):
-        self.last_logprob = None
-        self.det_step = False
-        return self.random_policy(obs)
-
-    # ---- DIRICHLET PARAMETERS ----
-    alpha = F.softplus(logits) + 1e-4
-    alpha_scaled = alpha / self.tau
-
-    # mean-preserving rescaling
-    A_t = logits.numel()
-    alpha_scaled = alpha_scaled * (A_t / alpha_scaled.sum())
-
-    # ======================================================
-    # === DETERMINISTIC BRANCH (MEAN OF DIRICHLET DIST) ===
-    # ======================================================
-    if deterministic:
-        # deterministic mean (expected value)
-        w_t = alpha_scaled / alpha_scaled.sum()
-
-        # no log-prob, because no RL gradient is used
-        self.last_logprob = None
-        self.det_step = True
-
-        return w_t.detach().cpu().numpy()
-
-    # ======================================================
-    # === STOCHASTIC BRANCH (TRAINING) =====================
-    # ======================================================
-    dist = Dirichlet(alpha_scaled)
-    w_t = dist.sample()
-    log_prob = dist.log_prob(w_t)
-
-    # Store log-prob for REINFORCE update
-    self.last_logprob = log_prob
-    self.det_step = False
-
-    return w_t.detach().cpu().numpy()
+            """
+            Masking is applied AFTER forward pass → critical fix.
+            """
+        
+            # ---- Canonical reindex ----
+            features, prev_w, mask = self.asset_indexer.reindex(obs)
+        
+            features = torch.tensor(features, dtype=torch.float32, device=self.device)
+            prev_w   = torch.tensor(prev_w,   dtype=torch.float32, device=self.device)
+            mask     = torch.tensor(mask,     dtype=torch.bool,    device=self.device)
+        
+            # ---- Policy forward on FULL canonical set ----
+            logits_full = self.nn(features, prev_w, self.episode_start)
+            logits = logits_full[mask]            # select active assets
+            prev_w_active = prev_w[mask]
+        
+            self.episode_start = False
+        
+            # ---- EPSILON OVERRIDE (only applies when NOT deterministic) ----
+            if (not deterministic) and (self.rng.random() < self.epsilon):
+                self.last_logprob = None
+                self.det_step = False
+                return self.random_policy(obs)
+        
+            # ---- DIRICHLET PARAMETERS ----
+            alpha = F.softplus(logits) + 1e-4
+            alpha_scaled = alpha / self.tau
+        
+            # mean-preserving rescaling
+            A_t = logits.numel()
+            alpha_scaled = alpha_scaled * (A_t / alpha_scaled.sum())
+        
+            # ======================================================
+            # === DETERMINISTIC BRANCH (MEAN OF DIRICHLET DIST) ===
+            # ======================================================
+            if deterministic:
+                # deterministic mean (expected value)
+                w_t = alpha_scaled / alpha_scaled.sum()
+        
+                # no log-prob, because no RL gradient is used
+                self.last_logprob = None
+                self.det_step = True
+        
+                return w_t.detach().cpu().numpy()
+        
+            # ======================================================
+            # === STOCHASTIC BRANCH (TRAINING) =====================
+            # ======================================================
+            dist = Dirichlet(alpha_scaled)
+            w_t = dist.sample()
+            log_prob = dist.log_prob(w_t)
+        
+            # Store log-prob for REINFORCE update
+            self.last_logprob = log_prob
+            self.det_step = False
+        
+            return w_t.detach().cpu().numpy()
 
 
 
