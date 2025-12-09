@@ -65,7 +65,6 @@ cache/
 *.weights
 *.h5
 models/
-checkpoints/
 saved_models/
 
 # Logs

@@ -5,28 +5,10 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-% Summary of work
-% TODO: Briefly summarize what was done
+This paper investigated the application of deep reinforcement learning to cryptocurrency portfolio management, comparing four RL agents against classical baselines on a rigorous 646-day out-of-sample test. Our evaluation employed a realistic environment with monthly universe reconstitution, transaction costs, and turnover constraints, providing a more stringent benchmark than typical in this literature.
 
-% Key findings
-% TODO: Restate main results
-% - MVO achieved highest returns (366.54\%) and Sharpe (1.64)
-% - REINFORCE was best RL agent (166.98\%, Sharpe 1.21)
-% - Traditional methods outperformed learned policies
+The central finding is that algorithmic paradigm and inference-time behavior both matter: DDQN's value-based approach with discrete delta actions outperformed all methods except MVO, while REINFORCE's continuous Dirichlet policy achieved competitive performance (167\% with baseline) when using deterministic evaluation that outputs the distribution mean rather than sampling. This demonstrates that policy gradient agents can learn meaningful allocation preferences, but realizing this potential requires appropriate inference-time behavior. Mean-Variance optimization's dominance (366\% return) further demonstrates that classical estimation-based methods remain formidable competitors when market conditions favor momentum-based signals.
 
-% Contributions
-% TODO: Reiterate contributions
+Our methodological contributions---the variable-universe environment with canonical padding, delta-based discrete action space, and frozen dataset export---address practical challenges that prior work largely ignored and enable exact reproduction of our experiments.
 
-% Future work
-\paragraph{Future Work.} Several directions merit further investigation:
-\begin{enumerate}[leftmargin=*]
-    \item \textbf{Extended evaluation}: Testing across multiple market regimes, including bear markets and high-volatility periods.
-    
-    \item \textbf{Advanced architectures}: Exploring transformer-based models and attention mechanisms for temporal dependencies.
-    
-    \item \textbf{Multi-objective optimization}: Incorporating risk constraints directly into the RL objective.
-    
-    \item \textbf{Transfer learning}: Pre-training on traditional financial markets and fine-tuning on cryptocurrency data.
-    
-    \item \textbf{Online learning}: Adapting to non-stationary market dynamics through continual learning approaches.
-\end{enumerate}
+Several directions merit future investigation: deterministic policy gradient methods (DDPG, TD3) that provide a natural middle ground between discrete and sampled continuous actions; transformer architectures with cross-asset attention for implicit correlation modeling; extended evaluation across bear markets and crash periods; investigation of stochastic versus deterministic deployment tradeoffs; and online learning approaches that adapt to evolving market dynamics. Our results suggest that the gap between research benchmarks and practical deployment is narrower than sometimes claimed---careful implementation of established RL algorithms can yield portfolio strategies that outperform passive investment approaches.

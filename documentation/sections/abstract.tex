@@ -8,15 +8,15 @@
 Cryptocurrency markets present unique challenges for portfolio management due to their high volatility, 24/7 trading, and evolving asset universe.
 
 % OBJECTIVE: What did you do?
-We investigate the application of deep reinforcement learning (DRL) to dynamic cryptocurrency portfolio allocation, implementing and comparing three RL agents---Deep Q-Network (DQN), Double DQN (DDQN), and REINFORCE---against traditional baselines including Equal Weight, Market Cap Weight, and Mean-Variance Optimization.
+We investigate the application of deep reinforcement learning (DRL) to dynamic cryptocurrency portfolio allocation, implementing and comparing four RL agents---Deep Q-Network (DQN), Double DQN (DDQN), REINFORCE, and REINFORCE with learned baseline---against traditional baselines including Equal Weight, Market Cap Weight, and Mean-Variance Optimization.
 
 % METHODS: How did you do it?
-Our environment processes over seven years of historical data (2018--2025) for 37 cryptocurrencies, using a 60-day lookback window of OHLCV features. We design a discrete action space with 70 delta-based portfolio adjustments for value-based methods and a continuous simplex output for policy gradient methods, incorporating realistic constraints including transaction costs (0.1\%) and turnover limits (30\%).
+Our environment processes over seven years of historical data (2018--2025) for 37 cryptocurrencies, using a 60-day lookback window of OHLCV features. We design a discrete action space with 70 delta-based portfolio adjustments for value-based methods and a continuous Dirichlet-sampled simplex output for policy gradient methods, incorporating realistic constraints including transaction costs (0.1\%) and turnover limits (30\%).
 
 % RESULTS: What did you find?
-On a held-out test period (January 2024--October 2025), the Mean-Variance baseline achieved the highest cumulative return (366.54\%) and Sharpe ratio (1.64), followed by Equal Weight (168.50\%, Sharpe 1.22). Among RL agents, REINFORCE performed best (166.98\%, Sharpe 1.21), with DQN (155.47\%) and DDQN (144.50\%) trailing behind.
+On a held-out test period (January 2024--October 2025), Mean-Variance optimization achieved the highest cumulative return (366.54\%) and Sharpe ratio (1.64). Among RL agents, DDQN performed best (190.77\%, Sharpe 1.25), outperforming both passive baselines (Equal Weight 168.50\%, Market Cap 159.30\%) and demonstrating that value-based deep RL can capture exploitable structure in cryptocurrency markets. The policy gradient methods also performed competitively under deterministic evaluation: REINFORCE achieved 161.84\% and REINFORCE+Baseline reached 167.37\%---nearly matching Equal Weight---with minimal turnover (0.35--0.88\%).
 
 % CONCLUSIONS: What does it mean?
-Our results suggest that in the tested market regime, classical optimization methods outperformed learned policies, highlighting challenges in sample efficiency and generalization for DRL in financial applications. We discuss implications for future research directions.
+Our results demonstrate that deep RL can outperform passive investment strategies in cryptocurrency portfolio management. DDQN's delta-based action space provided the strongest returns, while REINFORCE's Dirichlet policy achieved competitive performance when using deterministic (mean-based) inference. We discuss the importance of inference-time behavior for continuous policies and identify directions for future research.
 
 \end{abstract}

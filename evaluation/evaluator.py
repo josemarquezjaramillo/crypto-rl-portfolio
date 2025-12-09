@@ -47,6 +47,7 @@ from baselines.mean_variance import MeanVarianceAgent, MeanVarianceConfig
 # RL Agents
 from agents.dqn.dqn_agent import DQNAgent, DQNConfig
 from agents.policy_grad.policygrad import PolicyGradAgent, PolicyGradConfig
+from agents.policy_grad.reinforce_plus_baseline import ReinforceBaselineAgent
 
 
 # =============================================================================
@@ -321,21 +322,58 @@ def create_reinforce_agent(seed: int, env: PortfolioEnv,
     """
     Factory for REINFORCE (Policy Gradient) agent.
     
-    Loads a pre-trained PolicyGradAgent from a pickle checkpoint.
+    Loads a pre-trained PolicyGradAgent by loading policy network weights.
     The agent uses a GRU-based policy network with Dirichlet output distribution
     for continuous portfolio weight sampling.
+    
+    Config: hidden_dim=128, temperature=5
     """
-    import pickle
+    import torch
     
-    with open(checkpoint_path / "agent.pkl", 'rb') as f:
-        agent = pickle.load(f)
+    cfg = PolicyGradConfig('reinforce')
+    cfg.hidden_dim = 128
+    cfg.temperature = 5
+    cfg.device = device
+    cfg.epsilon_start = 0
+    cfg.epsilon_end = 0  # No exploration during evaluation
+    cfg.dataset_path = "dataset_v1"
     
-    # Set to evaluation mode
-    agent.training = False
+    agent = PolicyGradAgent(cfg, env)
+    agent.nn.load_state_dict(torch.load(checkpoint_path / "policy_weights.pt", map_location=device, weights_only=True))
+    agent.nn.eval()
     agent.epsilon = 0.0  # No exploration during evaluation
     
-    # Update environment reference (the saved env may have stale data)
-    agent.env = env
+    return agent
+
+
+def create_reinforce_baseline_agent(seed: int, env: PortfolioEnv,
+                                    checkpoint_path: Path,
+                                    device: str = "cuda") -> ReinforceBaselineAgent:
+    """
+    Factory for REINFORCE+Baseline (Policy Gradient with learned value baseline) agent.
+    
+    Loads a pre-trained ReinforceBaselineAgent by loading both policy and value head weights.
+    The agent uses a GRU-based policy network with a learned value function baseline
+    for variance reduction.
+    
+    Config: hidden_dim=128, temperature=1
+    """
+    import torch
+    
+    cfg = PolicyGradConfig('reinforce_baseline')
+    cfg.hidden_dim = 128
+    cfg.temperature = 1
+    cfg.epsilon_start = 0
+    cfg.epsilon_end = 0  # No exploration during evaluation
+    cfg.device = device
+    cfg.dataset_path = "dataset_v1"
+    
+    agent = ReinforceBaselineAgent(cfg, env)
+    agent.nn.load_state_dict(torch.load(checkpoint_path / "policy_weights.pt", map_location=device, weights_only=True))
+    agent.value_head.load_state_dict(torch.load(checkpoint_path / "value_weights.pt", map_location=device, weights_only=True))
+    agent.nn.eval()
+    agent.value_head.eval()
+    agent.epsilon = 0.0  # No exploration during evaluation
     
     return agent
 

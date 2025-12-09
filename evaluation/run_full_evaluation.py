@@ -47,6 +47,7 @@ from evaluation.evaluator import (
     create_mean_variance_agent,
     create_dqn_agent,
     create_reinforce_agent,
+    create_reinforce_baseline_agent,
     run_detailed_evaluation,
 )
 from evaluation.visualizer import (
@@ -103,14 +104,24 @@ def setup_evaluator(config: EvaluationConfig) -> Evaluator:
         print(f"  ✗ DDQN checkpoint not found: {ddqn_path}")
     
     # Register REINFORCE agent
-    reinforce_path = Path("checkpoints/reinforce_production")
-    if (reinforce_path / "agent.pkl").exists():
+    reinforce_path = Path("checkpoints/reinforce/best")
+    if (reinforce_path / "policy_weights.pt").exists():
         evaluator.register_rl_agent("REINFORCE",
             lambda seed, env, cp, dev: create_reinforce_agent(seed, env, cp, dev),
             reinforce_path)
         print(f"  ✓ Registered REINFORCE agent (checkpoint: {reinforce_path})")
     else:
-        print(f"  ✗ REINFORCE checkpoint not found: {reinforce_path}/agent.pkl")
+        print(f"  ✗ REINFORCE checkpoint not found: {reinforce_path}/policy_weights.pt")
+    
+    # Register REINFORCE+Baseline agent
+    reinforce_baseline_path = Path("checkpoints/reinforce_baseline/best")
+    if (reinforce_baseline_path / "policy_weights.pt").exists():
+        evaluator.register_rl_agent("REINFORCE+Baseline",
+            lambda seed, env, cp, dev: create_reinforce_baseline_agent(seed, env, cp, dev),
+            reinforce_baseline_path)
+        print(f"  ✓ Registered REINFORCE+Baseline agent (checkpoint: {reinforce_baseline_path})")
+    else:
+        print(f"  ✗ REINFORCE+Baseline checkpoint not found: {reinforce_baseline_path}/policy_weights.pt")
     
     return evaluator
 
@@ -143,7 +154,7 @@ def create_visualizations(
             ci_lower_col='Return CI Low (%)',
             ci_upper_col='Return CI High (%)',
             title=f'Cumulative Return Comparison ({split.upper()} Set)',
-            figsize=(10, 6),
+            figsize=(12, 6),
         )
         fig.savefig(viz_dir / f'return_comparison_{timestamp}.png', dpi=300, bbox_inches='tight')
         plt.close(fig)
@@ -159,7 +170,7 @@ def create_visualizations(
             ci_lower_col='Sharpe CI Low',
             ci_upper_col='Sharpe CI High',
             title=f'Sharpe Ratio Comparison ({split.upper()} Set)',
-            figsize=(10, 6),
+            figsize=(12, 6),
         )
         fig.savefig(viz_dir / f'sharpe_comparison_{timestamp}.png', dpi=300, bbox_inches='tight')
         plt.close(fig)
@@ -171,9 +182,9 @@ def create_visualizations(
     try:
         fig = plot_multi_metric_comparison(
             df,
-            metrics=['Return (%)', 'Sharpe', 'Max DD (%)', 'Sortino'],
+            metrics=['Return (%)', 'Sharpe', 'Max DD (%)'],
             title=f'Multi-Metric Comparison ({split.upper()} Set)',
-            figsize=(16, 5),
+            figsize=(16, 6),
         )
         fig.savefig(viz_dir / f'multi_metric_{timestamp}.png', dpi=300, bbox_inches='tight')
         plt.close(fig)
@@ -192,7 +203,7 @@ def create_visualizations(
             agents=agents,
             metrics=available_metrics,
             title=f'Performance Metrics Heatmap ({split.upper()} Set)',
-            figsize=(12, 6),
+            figsize=(14, 7),
         )
         fig.savefig(viz_dir / f'metrics_heatmap_{timestamp}.png', dpi=300, bbox_inches='tight')
         plt.close(fig)
@@ -314,10 +325,10 @@ def create_timeseries_visualizations(
     if len(strategies_with_weights) >= 2:
         try:
             fig = plot_multi_agent_allocation_comparison(
-                strategies_with_weights[:6],  # Show up to 6 agents (3 baselines + 3 RL)
+                strategies_with_weights[:7],  # Show up to 7 agents (3 baselines + 4 RL)
                 top_n=8,
                 title=f'Allocation Strategies Comparison ({split.upper()} Set)',
-                figsize=(18, 12),  # Larger figure for 6 subplots
+                figsize=(18, 14),  # Larger figure for 7 subplots (4 rows)
             )
             fig.savefig(viz_dir / f'allocation_comparison_{timestamp}.png', dpi=300, bbox_inches='tight')
             plt.close(fig)

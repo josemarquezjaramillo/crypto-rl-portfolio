@@ -530,7 +530,7 @@ def plot_bar_comparison_with_ci(
     ci_upper_col: Optional[str] = None,
     title: str = "Agent Comparison",
     output_path: Optional[Path] = None,
-    figsize: Tuple[int, int] = (10, 6),
+    figsize: Tuple[int, int] = (12, 6),
     color_by_type: bool = True,
 ) -> plt.Figure:
     """
@@ -587,7 +587,7 @@ def plot_bar_comparison_with_ci(
                    capsize=5, capthick=2, linewidth=2)
     
     ax.set_xticks(x)
-    ax.set_xticklabels(agents, rotation=15, ha='right')
+    ax.set_xticklabels(agents, rotation=45, ha='right')
     ax.set_ylabel(metric)
     ax.set_title(title, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='y')
@@ -620,7 +620,7 @@ def plot_multi_metric_comparison(
     metrics: List[str] = ['Return (%)', 'Sharpe', 'Max DD (%)'],
     title: str = "Multi-Metric Agent Comparison",
     output_path: Optional[Path] = None,
-    figsize: Tuple[int, int] = (15, 5),
+    figsize: Tuple[int, int] = (16, 6),
 ) -> plt.Figure:
     """
     Create side-by-side bar charts for multiple metrics.
@@ -665,7 +665,7 @@ def plot_multi_metric_comparison(
         bars = ax.bar(x, values, color=colors, alpha=0.8, edgecolor='black')
         
         ax.set_xticks(x)
-        ax.set_xticklabels(agents, rotation=30, ha='right', fontsize=9)
+        ax.set_xticklabels(agents, rotation=45, ha='right', fontsize=9)
         ax.set_ylabel(metric)
         ax.set_title(metric, fontsize=12)
         ax.grid(True, alpha=0.3, axis='y')
@@ -820,12 +820,13 @@ def plot_metric_heatmap(
     metrics: List[str],
     title: str = "Performance Metrics Heatmap",
     output_path: Optional[Path] = None,
-    figsize: Tuple[int, int] = (10, 6),
+    figsize: Tuple[int, int] = (14, 7),
     cmap: str = 'RdYlGn',
     annotate: bool = True,
+    invert_metrics: Optional[List[str]] = None,
 ) -> plt.Figure:
     """
-    Create heatmap of metrics across agents.
+    Create heatmap of metrics across agents with per-column normalization.
     
     Parameters
     ----------
@@ -843,13 +844,20 @@ def plot_metric_heatmap(
         Colormap name
     annotate : bool
         Whether to show values in cells
+    invert_metrics : List[str], optional
+        Metrics where lower is better (e.g., Max DD, Volatility).
+        These will have inverted color scale (green for low values).
         
     Returns
     -------
     plt.Figure
         Matplotlib figure object
     """
-    # Build matrix
+    # Default metrics where lower is better
+    if invert_metrics is None:
+        invert_metrics = ['Max DD (%)', 'Volatility (%)', 'Turnover (%)']
+    
+    # Build matrix with raw values
     data = []
     for agent in agents:
         row = results_df[results_df['Agent'] == agent]
@@ -864,26 +872,50 @@ def plot_metric_heatmap(
     
     matrix = np.array(data)
     
+    # Normalize each column independently for coloring
+    normalized_matrix = np.zeros_like(matrix, dtype=float)
+    for j, metric in enumerate(metrics):
+        col = matrix[:, j]
+        col_min, col_max = np.nanmin(col), np.nanmax(col)
+        
+        if col_max - col_min > 1e-8:
+            if metric in invert_metrics:
+                # Invert: lower values get higher normalized score (green)
+                normalized_matrix[:, j] = (col_max - col) / (col_max - col_min)
+            else:
+                # Standard: higher values get higher normalized score (green)
+                normalized_matrix[:, j] = (col - col_min) / (col_max - col_min)
+        else:
+            normalized_matrix[:, j] = 0.5  # All same value
+    
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Normalize each column for coloring
-    im = ax.imshow(matrix, cmap=cmap, aspect='auto')
+    # Use normalized matrix for coloring (0-1 scale per column)
+    im = ax.imshow(normalized_matrix, cmap=cmap, aspect='auto', vmin=0, vmax=1)
     
     ax.set_xticks(np.arange(len(metrics)))
     ax.set_yticks(np.arange(len(agents)))
-    ax.set_xticklabels(metrics, rotation=30, ha='right')
+    ax.set_xticklabels(metrics, rotation=45, ha='right')
     ax.set_yticklabels(agents)
     
+    # Annotate with ORIGINAL values (not normalized)
     if annotate:
         for i in range(len(agents)):
             for j in range(len(metrics)):
                 val = matrix[i, j]
                 if not np.isnan(val):
                     text = f'{val:.2f}' if abs(val) < 10 else f'{val:.1f}'
-                    ax.text(j, i, text, ha='center', va='center', color='black', fontsize=9)
+                    # Choose text color based on background brightness
+                    bg_val = normalized_matrix[i, j]
+                    text_color = 'white' if bg_val < 0.3 or bg_val > 0.7 else 'black'
+                    ax.text(j, i, text, ha='center', va='center', 
+                           color=text_color, fontsize=9, fontweight='bold')
     
-    ax.set_title(title, fontweight='bold')
-    fig.colorbar(im, ax=ax, shrink=0.8)
+    ax.set_title(title, fontweight='bold', pad=10)
+    
+    # Add color interpretation note instead of colorbar
+    ax.text(0.5, -0.15, "Color scale per column: Green = Best, Red = Worst", 
+            transform=ax.transAxes, ha='center', fontsize=10, style='italic')
     
     plt.tight_layout()
     
@@ -902,7 +934,7 @@ def plot_cumulative_returns_comparison(
     multi_agent_pvs: Dict[str, List[float]],
     title: str = "Cumulative Returns Comparison",
     output_path: Optional[Path] = None,
-    figsize: Tuple[int, int] = (14, 7),
+    figsize: Tuple[int, int] = (16, 7),
     log_scale: bool = False,
     show_drawdown: bool = True,
 ) -> plt.Figure:
@@ -959,7 +991,7 @@ def plot_cumulative_returns_comparison(
     if log_scale:
         ax1.set_yscale('symlog')
     ax1.set_title(title, fontweight='bold', fontsize=14)
-    ax1.legend(loc='upper left', framealpha=0.9)
+    ax1.legend(loc='upper left', bbox_to_anchor=(1.02, 1), framealpha=0.9)
     ax1.grid(True, alpha=0.3)
     
     if show_drawdown and ax2 is not None:
@@ -983,7 +1015,7 @@ def plot_rolling_sharpe(
     window: int = 30,
     title: str = "Rolling Sharpe Ratio (30-day)",
     output_path: Optional[Path] = None,
-    figsize: Tuple[int, int] = (14, 5),
+    figsize: Tuple[int, int] = (16, 5),
     risk_free_rate: float = 0.0,
 ) -> plt.Figure:
     """
@@ -1039,7 +1071,7 @@ def plot_rolling_sharpe(
     ax.set_xlabel('Trading Day')
     ax.set_ylabel('Rolling Sharpe Ratio')
     ax.set_title(title, fontweight='bold')
-    ax.legend(loc='upper right', framealpha=0.9)
+    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), framealpha=0.9)
     ax.grid(True, alpha=0.3)
     ax.set_ylim(-5, 5)  # Clip extreme values
     

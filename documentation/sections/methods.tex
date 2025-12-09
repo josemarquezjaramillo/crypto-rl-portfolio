@@ -5,7 +5,7 @@
 \section{Methods}
 \label{sec:methods}
 
-This section describes our methodology for applying deep reinforcement learning to cryptocurrency portfolio management. We first formalize the problem as a Markov Decision Process (\Cref{sec:problem_formulation}), then detail our environment design including data processing and constraint handling (\Cref{sec:environment}). We present three RL agent architectures (\Cref{sec:agents}) and three baseline strategies (\Cref{sec:baselines}) that operate under identical constraints for fair comparison.
+This section describes our methodology for applying deep reinforcement learning to cryptocurrency portfolio management. We first formalize the problem as a Markov Decision Process (\Cref{sec:problem_formulation}), then detail our environment design including data processing and constraint handling (\Cref{sec:environment}). We present four RL agent architectures (\Cref{sec:agents}) and three baseline strategies (\Cref{sec:baselines}) that operate under identical constraints for fair comparison.
 
 % ------------------------------------------------------------
 \subsection{Problem Formulation}
@@ -40,7 +40,7 @@ where $\vect{R}_{t+1} \in \R^{A_t}$ is the vector of simple returns from day $t$
 \begin{equation}
     \max_\pi \; \E_\pi \left[ \sum_{t=0}^{T} \gamma^t r_t \right]
 \end{equation}
-We use $\gamma = 0.5$ for production training, selected via Bayesian hyperparameter optimization (\Cref{sec:hyperparameters}). Lower discount factors proved more stable for daily portfolio rebalancing, where transaction costs make long-horizon planning less beneficial than in traditional RL domains.
+We use $\gamma = 0.93$ for production training, selected via Bayesian hyperparameter optimization (\Cref{sec:hyperparameters}). This relatively high discount factor indicates that longer-horizon planning is beneficial even with daily transaction costs, though the search space included values as low as 0.5.
 
 % ------------------------------------------------------------
 \subsection{Environment Design}
@@ -83,83 +83,41 @@ The environment supports two constraint handling approaches:
 \label{sec:agents}
 % ------------------------------------------------------------
 
-We implement three reinforcement learning agents representing different algorithmic paradigms: value-based methods (DQN, DDQN) and policy gradient methods (REINFORCE).
+We implement two reinforcement learning agent families: value-based methods (DQN, DDQN) and policy gradient methods (REINFORCE, REINFORCE with learned baseline).
 
 % ----------------------------
-\subsubsection{Deep Q-Network (DQN)}
+\subsubsection{Deep Q-Network (DQN) and Double DQN (DDQN)}
 \label{sec:dqn}
 % ----------------------------
 
-Our DQN implementation addresses two key challenges: (1) handling variable universe sizes with fixed-dimensional neural networks, and (2) designing a discrete action space suitable for portfolio rebalancing.
+Our value-based agents address two key challenges: handling variable universe sizes with fixed-dimensional networks, and designing a discrete action space for portfolio rebalancing.
 
 \paragraph{Canonical Padding StateEncoder.}
-Standard neural networks require fixed input dimensions, but the tradable universe size $A_t$ varies daily. Following positional encoding approaches in sequence models, we assign each asset a fixed canonical position across all observations.
-
-During initialization, we construct a registry of all 37 unique assets appearing in the dataset (both training and test periods), sorted alphabetically for determinism. For each observation at time $t$, we initialize zero-padded canonical arrays $\mat{X}_{\text{canonical}} \in \R^{37 \times 4 \times 60}$ and $\vect{w}_{\text{canonical}} \in \R^{37}$, then populate each tradable asset's features and weights at its assigned canonical position $p_i$. The resulting representation is flattened to 8,917 dimensions $(37 \times 240 + 37)$ and projected through a learned linear layer to a 256-dimensional state embedding. This design preserves asset identity information essential for learning context-dependent Q-values. The Q-network can learn that ``increase BTC by 10\%'' is safe when Bitcoin's current allocation is 15\% but violates concentration limits when it is already 30\%.
+We assign each of the 37 unique assets a fixed canonical position. For each observation, we populate zero-padded arrays $\mat{X}_{\text{canonical}} \in \R^{37 \times 4 \times 60}$ and $\vect{w}_{\text{canonical}} \in \R^{37}$ at assigned positions, then flatten to 8,917 dimensions and project through a learned linear layer to a 256-dimensional embedding. This preserves asset identity essential for context-dependent Q-values.
 
 \paragraph{Delta-Based Action Catalog.}
-Following~\citet{lucarelli2020dqlcrypto}, we implement a catalog of 70 discrete portfolio adjustment actions rather than fixed allocation strategies. The catalog comprises five action categories designed to span the space of common portfolio adjustments. A single hold action maintains the current allocation unchanged. Thirty-three adjust actions increase or decrease exposure to the top-$K$ assets (for $K \in \{1,2,3,4,5\}$) by increments of $\pm5\%$, $\pm10\%$, or $\pm15\%$, enabling gradual position building. Twenty-two rotation actions transfer weight between asset pairs in magnitudes from 5\% to 20\%, facilitating relative value trades. Eight diversification and concentration actions shift weight toward or away from equal distribution across the portfolio. Finally, six rebalancing actions reset allocations to equal weight across all assets, the top-5, or the top-10 by market capitalization. Each action is implemented as a function that takes the current observation and previous weights, applies the corresponding delta adjustment, and renormalizes the result to the probability simplex. This design enables smooth portfolio trajectories and transfers learning across different market contexts.
+We implement 70 discrete portfolio adjustment actions: a hold action; adjust actions that increase/decrease exposure to top-$K$ assets by $\pm5\%$, $\pm10\%$, or $\pm15\%$; rotation actions transferring weight between asset pairs; and rebalancing actions resetting to equal weight or market-cap weight. Each action applies a delta adjustment and renormalizes to the simplex.
 
-\paragraph{Network Architecture.}
-The Q-network is a 3-layer multilayer perceptron that receives the 256-dimensional state embedding from the StateEncoder and processes it through two hidden layers of 512 and 256 units respectively, each with ReLU activation and 0.1 dropout for regularization. The output layer produces 70 Q-values corresponding to each action in the delta catalog. The complete architecture comprises approximately 2.56 million parameters, dominated by the StateEncoder's projection from the 8,917-dimensional flattened input to the 256-dimensional embedding.
-
-\paragraph{Training Algorithm.}
-We use standard DQN training~\citep{mnih2015dqn} with experience replay and target network stabilization. Transitions are stored in a replay buffer with capacity 10,000 and sampled in minibatches of 64 for gradient updates. Exploration follows an $\epsilon$-greedy schedule where $\epsilon$ decays from 1.0 to 0.1 over the course of training, balancing exploration of novel actions against exploitation of learned Q-values. A separate target network provides stable bootstrap targets and receives hard parameter updates from the online network every 100 steps. We optimize using Adam with learning rate $10^{-4}$. All hyperparameters were selected via Bayesian optimization using Optuna~\citep{optuna2019} on regime-diverse validation windows (\Cref{sec:hyperparameters}).
+\paragraph{Network Architecture and Training.}
+The Q-network is a 3-layer MLP (512$\rightarrow$256$\rightarrow$70) with ReLU and dropout. We use experience replay (capacity 10,000), $\epsilon$-greedy exploration decaying from 1.0 to 0.1, and target network updates every 100 steps. DDQN differs only in the TD target: $Q_{\text{target}} = r + \gamma \, Q_{\text{target}}(s', \argmax_{a'} Q_{\text{online}}(s', a'))$, decoupling action selection from evaluation to reduce overestimation bias~\citep{vanHasselt2016ddqn}.
 
 % ----------------------------
-\subsubsection{Double DQN (DDQN)}
-\label{sec:ddqn}
-% ----------------------------
-
-Standard DQN tends to overestimate Q-values because the same network both selects and evaluates actions in the Bellman target~\citep{vanHasselt2016ddqn}. Double DQN addresses this by decoupling action selection from evaluation:
-\begin{equation}
-    Q_{\text{target}} = r + \gamma \, Q_{\text{target}}\big(s', \argmax_{a'} Q_{\text{online}}(s', a')\big)
-\end{equation}
-
-The online network selects the best action $a^* = \argmax_{a'} Q_{\text{online}}(s', a')$, while the target network evaluates it. This breaks the positive feedback loop that inflates Q-values in standard DQN. Our DDQN implementation shares the same architecture and action catalog as DQN, differing only in the TD target computation.
-
-% ----------------------------
-\subsubsection{REINFORCE (Policy Gradient)}
-\label{sec:reinforce}
-% ----------------------------
-
-Our policy gradient agent directly parameterizes portfolio weights as continuous outputs, avoiding the discretization required by value-based methods.
-
-\paragraph{Policy Network Architecture.}
-The policy network employs a GRU-based encoder to process temporal patterns in asset price histories. A single GRU layer with input size 4 (corresponding to the OHLCV feature channels) and hidden size 32 processes each asset's 60-day sequence independently, producing a learned representation of recent price dynamics. The final hidden state is concatenated with the asset's previous portfolio weight and an initialization flag indicating whether the asset was tradable in the prior period, yielding a 34-dimensional feature vector per asset. This representation passes through a two-layer output head---Linear(34$\rightarrow$32) with ReLU activation followed by Linear(32$\rightarrow$1)---to produce per-asset logits. A masked softmax over tradable assets converts these logits to portfolio weights on the probability simplex. Like DQN, we employ canonical asset indexing across 37 positions to handle variable universe sizes, with a boolean mask indicating tradable assets on each day.
-
-\paragraph{Training Algorithm.}
-We train the policy network using the REINFORCE algorithm~\citep{williams1992reinforce} with Monte Carlo return estimates. During training, actions are sampled from a Dirichlet distribution parameterized by the softmax policy outputs, providing smoother exploration over the continuous weight simplex than categorical sampling over discretized allocations would permit. An additional exploration mechanism samples uniformly random portfolio allocations with probability $\epsilon$, which decays from 1.0 to 0.05 over 500 episodes, encouraging the agent to discover diverse portfolio configurations early in training. Policy gradients are computed using complete episode returns and applied via Adam optimization with learning rate $10^{-4}$. Constraint satisfaction is handled through projection mode: when the sampled allocation violates portfolio constraints, the environment projects it onto the feasible set before execution (\Cref{sec:constraint_enforcement}), allowing the policy to learn from the realized feasible allocation.
-
+\subsubsection{REINFORCE Policy Gradient Agents} 
+\label{sec:reinforce} 
+% ---------------------------- 
+Our policy gradient agents directly parameterize portfolio weights as continuous outputs. \paragraph{Policy Network Architecture.} A GRU layer (input size $4 \times N$, sequence length=60) processes the combined assets' 60-day sequence.  The GRU layer outputs to a fully connected layer where it is concatenated with the previous weights and a binary initialization flag.  This is then fed to another hidden layer then to a final output layer which produces per-asset logits, converted via masked softmax to portfolio weights. We use canonical indexing across 37 positions with a boolean mask for tradable assets. 
+ 
+\paragraph{Training with Dirichlet Sampling.} Actions are sampled from a Dirichlet distribution with concentration parameters $\boldsymbol{\alpha} = \text{softplus}(\text{logits}) / \tau$, where temperature $\tau$ is a parameter introduced to flatten or spike the distribution. When sampled allocations violate constraints, the environment projects them onto the feasible set. Policy gradients use Monte Carlo returns, and the network uses an Adam optimizer.
+ 
+\paragraph{Learned Value Baseline.} To reduce gradient variance, REINFORCE+Baseline adds a value head $V_\phi(s_t)$, which shares the GRU encoder for learning efficiency. The advantage $A_t = G_t - V_\phi(s_t)$ replaces raw returns in the policy gradient. The combined loss is $\mathcal{L} = -\sum_t A_t \log \pi_\theta(a_t | s_t) + 0.5 \sum_t (G_t - V_\phi(s_t))^2$.
+ 
 % ------------------------------------------------------------
 \subsection{Baselines}
 \label{sec:baselines}
 % ------------------------------------------------------------
 
-To assess whether reinforcement learning provides meaningful improvements over classical allocation methods, we implement three baselines operating under identical constraints.
-
-\subsubsection{Equal Weight (EW)}
-
-The equal weight strategy allocates uniformly across all $A_t$ tradable assets:
-\begin{equation}
-    w_t^{(i)} = \frac{1}{A_t} \quad \forall i \in \{1, \ldots, A_t\}
-\end{equation}
-
-Despite its simplicity, equal weighting has proven remarkably competitive against sophisticated optimization strategies by avoiding estimation error in expected returns and covariances~\citep{demiguel2009optimal}.
-
-\subsubsection{Market Cap Weight (MCW)}
-
-Market cap weighting allocates proportionally to market capitalization:
-\begin{equation}
-    w_t^{(i)} = \frac{\text{MarketCap}_t^{(i)}}{\sum_{j=1}^{A_t} \text{MarketCap}_t^{(j)}}
-\end{equation}
-
-This passive strategy mimics index-tracking funds and has minimal turnover since weights adjust automatically as prices change.
-
-\subsubsection{Mean-Variance Optimization (MVO)}
-
-The mean-variance baseline implements Markowitz portfolio optimization~\citep{markowitz1952portfolio} using the 60-day observation window:
+We implement three baselines operating under identical constraints. \textbf{Equal Weight (EW)} allocates uniformly: $w_t^{(i)} = 1/A_t$. Despite its simplicity, equal weighting has proven competitive by avoiding estimation error~\citep{demiguel2009optimal}. \textbf{Market Cap Weight (MCW)} allocates proportionally to market capitalization, mimicking index funds with minimal turnover. \textbf{Mean-Variance Optimization (MVO)} implements Markowitz optimization~\citep{markowitz1952portfolio}:
 \begin{equation}
     \vect{w}_t^* = \argmax_{\vect{w} \in \Delta^{A_t}} \left\{ \vect{w}^\top \hat{\boldsymbol{\mu}}_t - \frac{\lambda}{2} \vect{w}^\top \hat{\boldsymbol{\Sigma}}_t \vect{w} \right\}
 \end{equation}
-where $\hat{\boldsymbol{\mu}}_t$ and $\hat{\boldsymbol{\Sigma}}_t$ are sample estimates of expected returns and covariance from the lookback window, and $\lambda$ controls risk aversion. We use Ledoit-Wolf shrinkage~\citep{ledoit2004honey} for covariance estimation to address the instability of sample covariance matrices. When optimization fails due to numerical issues, the strategy falls back to equal weighting.
+using Ledoit-Wolf shrinkage~\citep{ledoit2004honey} for covariance estimation.
